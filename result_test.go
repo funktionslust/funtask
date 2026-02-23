@@ -1,7 +1,10 @@
 package funtask
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -101,62 +104,155 @@ func TestFail(t *testing.T) {
 	}
 }
 
-func TestFailWrap(t *testing.T) {
-	tests := []struct {
-		name     string
-		code     string
-		err      error
-		msg      string
-		wantMsg  string
-		wantCode string
-	}{
-		{
-			name:     "wraps error with code and message",
-			code:     "api_error",
-			err:      errors.New("connection refused"),
-			msg:      "API failed",
-			wantMsg:  "API failed",
-			wantCode: "api_error",
-		},
-		{
-			name:     "raw error not in result",
-			code:     "db_error",
-			err:      errors.New("pq: unique constraint violated"),
-			msg:      "Could not save record",
-			wantMsg:  "Could not save record",
-			wantCode: "db_error",
-		},
-		{
-			name:     "nil error does not panic",
-			code:     "unknown",
-			err:      nil,
-			msg:      "Something failed",
-			wantMsg:  "Something failed",
-			wantCode: "unknown",
-		},
-	}
+// businessError implements ErrorCoder and UserMessager for testing.
+type businessError struct {
+	code    string
+	message string
+	detail  string
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			r := FailWrap(tt.code, tt.err, tt.msg)
-			if r.Success {
-				t.Error("expected Success to be false")
-			}
-			if r.ErrorCode != tt.wantCode {
-				t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, tt.wantCode)
-			}
-			if r.Message != tt.wantMsg {
-				t.Errorf("Message = %q, want %q", r.Message, tt.wantMsg)
-			}
-			// Verify raw error is NOT stored anywhere in the Result
-			if r.Data != nil {
-				for k, v := range r.Data {
-					if str, ok := v.(string); ok && tt.err != nil && str == tt.err.Error() {
-						t.Errorf("raw error found in Data[%q]", k)
-					}
-				}
-			}
-		})
+func (e businessError) Error() string       { return e.detail }
+func (e businessError) ErrorCode() string   { return e.code }
+func (e businessError) UserMessage() string { return e.message }
+
+func TestFailFromError_PlainError(t *testing.T) {
+	err := errors.New("connection refused")
+	r := FailFromError(err, "internal_error")
+
+	if r.Success {
+		t.Error("expected Success to be false")
+	}
+	if r.ErrorCode != "internal_error" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "internal_error")
+	}
+	if r.Message != "connection refused" {
+		t.Errorf("Message = %q, want %q", r.Message, "connection refused")
+	}
+	if r.cause != err {
+		t.Error("cause not stored")
+	}
+}
+
+func TestFailFromError_ErrorCoder(t *testing.T) {
+	err := businessError{code: "order_failed", message: "order could not be placed", detail: "db: constraint violation"}
+	r := FailFromError(err, "internal_error")
+
+	if r.ErrorCode != "order_failed" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "order_failed")
+	}
+	if r.Message != "order could not be placed" {
+		t.Errorf("Message = %q, want %q", r.Message, "order could not be placed")
+	}
+	if r.cause == nil {
+		t.Error("cause not stored")
+	}
+}
+
+func TestFailFromError_ErrorCoderOnly(t *testing.T) {
+	err := &onlyCodedError{code: "rate_limited", msg: "too many requests"}
+	r := FailFromError(err, "fallback")
+
+	if r.ErrorCode != "rate_limited" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "rate_limited")
+	}
+	// No UserMessager → falls back to err.Error()
+	if r.Message != "too many requests" {
+		t.Errorf("Message = %q, want %q", r.Message, "too many requests")
+	}
+}
+
+// onlyCodedError implements ErrorCoder but not UserMessager.
+type onlyCodedError struct {
+	code string
+	msg  string
+}
+
+func (e *onlyCodedError) Error() string     { return e.msg }
+func (e *onlyCodedError) ErrorCode() string { return e.code }
+
+func TestFailFromError_WrappedError(t *testing.T) {
+	inner := businessError{code: "api_error", message: "API unreachable", detail: "connection timeout"}
+	wrapped := fmt.Errorf("sync failed: %w", inner)
+	r := FailFromError(wrapped, "internal_error")
+
+	// errors.As should unwrap to find ErrorCoder
+	if r.ErrorCode != "api_error" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "api_error")
+	}
+	if r.Message != "API unreachable" {
+		t.Errorf("Message = %q, want %q", r.Message, "API unreachable")
+	}
+}
+
+func TestWithCause(t *testing.T) {
+	err := errors.New("db connection lost")
+	r := Fail("db_error", "database unavailable").WithCause(err)
+
+	if r.cause != err {
+		t.Error("cause not stored")
+	}
+	if r.ErrorCode != "db_error" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "db_error")
+	}
+}
+
+func TestWithCause_Nil(t *testing.T) {
+	r := Fail("err", "failed").WithCause(nil)
+	if r.cause != nil {
+		t.Error("cause should be nil")
+	}
+}
+
+func TestWithCause_DoesNotMutateOriginal(t *testing.T) {
+	base := Fail("err", "failed")
+	_ = base.WithCause(errors.New("something"))
+	if base.cause != nil {
+		t.Error("WithCause mutated the original result")
+	}
+}
+
+func TestFailFromError_NilError(t *testing.T) {
+	r := FailFromError(nil, "unknown")
+	if r.Success {
+		t.Error("expected Success to be false")
+	}
+	if r.ErrorCode != "unknown" {
+		t.Errorf("ErrorCode = %q, want %q", r.ErrorCode, "unknown")
+	}
+	if r.Message != "" {
+		t.Errorf("Message = %q, want empty", r.Message)
+	}
+	if r.cause != nil {
+		t.Error("cause should be nil")
+	}
+}
+
+func TestWithCause_NotSerializedToJSON(t *testing.T) {
+	r := Fail("db_error", "connection lost").WithCause(errors.New("secret internal detail"))
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "secret internal detail") {
+		t.Errorf("cause leaked into JSON: %s", s)
+	}
+	if strings.Contains(s, "cause") {
+		t.Errorf("cause field present in JSON: %s", s)
+	}
+}
+
+func TestWithCause_ChainsWithData(t *testing.T) {
+	err := errors.New("timeout")
+	r := Fail("timeout", "request timed out").
+		WithCause(err).
+		WithData("retries", 3)
+
+	if r.cause != err {
+		t.Error("cause lost after WithData chain")
+	}
+	if r.Data["retries"] != 3 {
+		t.Errorf("Data[retries] = %v, want 3", r.Data["retries"])
 	}
 }
 

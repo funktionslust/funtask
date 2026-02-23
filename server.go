@@ -402,7 +402,11 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 			slot.release(jobID, resp.Success, duration)
 
-			log.Info("async job completed", "success", result.Success, "duration", duration)
+			attrs := []any{"success", result.Success, "duration", duration}
+			if result.cause != nil {
+				attrs = append(attrs, "error", result.cause)
+			}
+			log.Info("async job completed", attrs...)
 		}()
 
 		writeJSON(w, http.StatusAccepted, struct {
@@ -510,7 +514,11 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	slot.release(jobID, resp.Success, duration)
 
 	writeJSON(w, http.StatusOK, resp)
-	log.Info("job completed", "success", result.Success, "duration", duration)
+	attrs := []any{"success", result.Success, "duration", duration}
+	if result.cause != nil {
+		attrs = append(attrs, "error", result.cause)
+	}
+	log.Info("job completed", attrs...)
 	f.wg.Done()
 }
 
