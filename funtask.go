@@ -41,6 +41,11 @@ type taskSlot struct {
 	lastDuration    string
 }
 
+type customRoute struct {
+	pattern string
+	handler http.Handler
+}
+
 // Server hosts one or more named tasks that an orchestrator can trigger via HTTP.
 // Configure it with New and start it with ListenAndServe.
 type Server struct {
@@ -49,6 +54,9 @@ type Server struct {
 	// Task registry
 	tasks map[string]TaskFunc
 	slots map[string]*taskSlot
+
+	// Custom HTTP handlers
+	customHandlers []customRoute
 
 	// Security
 	authToken         string
@@ -170,6 +178,17 @@ func WithCallbackAllowlist(origins ...string) Option {
 func WithReadiness(fn func() error) Option {
 	return func(f *Server) {
 		f.readiness = fn
+	}
+}
+
+// WithHandler registers a custom HTTP handler on the server's mux.
+// The pattern follows net/http.ServeMux syntax (e.g. "GET /api/orders").
+// Custom handlers are not protected by the server's bearer-token auth;
+// apply your own middleware as needed. Patterns must not conflict with
+// built-in routes (/run, /stop, /result, /health, /livez, /readyz).
+func WithHandler(pattern string, handler http.Handler) Option {
+	return func(f *Server) {
+		f.customHandlers = append(f.customHandlers, customRoute{pattern, handler})
 	}
 }
 
@@ -308,8 +327,49 @@ func (f *Server) validate() error {
 	if f.deadLetterDir == "" {
 		errs = append(errs, "dead letter directory required")
 	}
+	for _, r := range f.customHandlers {
+		if r.pattern == "" {
+			errs = append(errs, "custom handler has empty pattern")
+		} else if conflict := reservedRoute(routePath(r.pattern)); conflict != "" {
+			errs = append(errs, fmt.Sprintf("custom handler %q conflicts with reserved route %s", r.pattern, conflict))
+		}
+		if r.handler == nil {
+			errs = append(errs, fmt.Sprintf("custom handler %q has nil handler", r.pattern))
+		}
+	}
 	if len(errs) == 0 {
 		return nil
 	}
 	return fmt.Errorf("server %q: %s", f.name, strings.Join(errs, "; "))
+}
+
+// reservedRoute returns the reserved path that conflicts with path,
+// or an empty string if no conflict exists.
+func reservedRoute(path string) string {
+	for _, r := range []string{"/health", "/livez", "/readyz"} {
+		if path == r {
+			return r
+		}
+	}
+	for _, r := range []string{"/run/", "/stop/", "/result/"} {
+		if strings.HasPrefix(path, r) {
+			return r
+		}
+	}
+	return ""
+}
+
+// routePath extracts the path component from a ServeMux pattern,
+// stripping any method prefix or host.
+func routePath(pattern string) string {
+	if _, after, ok := strings.Cut(pattern, " "); ok {
+		return strings.TrimSpace(after)
+	}
+	if strings.HasPrefix(pattern, "/") {
+		return pattern
+	}
+	if i := strings.Index(pattern, "/"); i >= 0 {
+		return pattern[i:]
+	}
+	return pattern
 }

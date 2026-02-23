@@ -349,12 +349,249 @@ func TestOptionFunctions_NoValidation(t *testing.T) {
 		WithCallbackTimeout(0),
 		WithCallbackAllowlist(),
 		WithReadiness(nil),
+		WithHandler("", nil),
 	)
 	if f == nil {
 		t.Fatal("New returned nil with edge-case options")
 	}
 	if len(f.callbackAllowlist) != 0 {
 		t.Errorf("callbackAllowlist = %v, want empty after WithCallbackAllowlist()", f.callbackAllowlist)
+	}
+}
+
+func TestWithHandler(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	f := New("n", WithHandler("GET /custom", h))
+	if len(f.customHandlers) != 1 {
+		t.Fatalf("customHandlers count = %d, want 1", len(f.customHandlers))
+	}
+	if f.customHandlers[0].pattern != "GET /custom" {
+		t.Errorf("pattern = %q, want %q", f.customHandlers[0].pattern, "GET /custom")
+	}
+}
+
+func TestWithHandler_Multiple(t *testing.T) {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	f := New("n",
+		WithHandler("GET /a", h),
+		WithHandler("POST /b", h),
+		WithHandler("GET /c", h),
+	)
+	if len(f.customHandlers) != 3 {
+		t.Errorf("customHandlers count = %d, want 3", len(f.customHandlers))
+	}
+}
+
+func TestValidate_CustomHandlerEmptyPattern(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	f := New("n",
+		WithTask("t", dummyTask),
+		WithAuthToken("secret"),
+		WithDeadLetterDir("/tmp/dl"),
+		WithHandler("", h),
+	)
+	err := f.validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty pattern") {
+		t.Errorf("error = %q, want it to contain %q", err, "empty pattern")
+	}
+}
+
+func TestValidate_CustomHandlerNilHandler(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n",
+		WithTask("t", dummyTask),
+		WithAuthToken("secret"),
+		WithDeadLetterDir("/tmp/dl"),
+		WithHandler("GET /custom", nil),
+	)
+	err := f.validate()
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "nil handler") {
+		t.Errorf("error = %q, want it to contain %q", err, "nil handler")
+	}
+}
+
+func TestValidate_CustomHandlerReservedRoute(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	tests := []struct {
+		name    string
+		pattern string
+		wantErr string
+	}{
+		{"exact health", "GET /health", "/health"},
+		{"exact livez", "GET /livez", "/livez"},
+		{"exact readyz", "GET /readyz", "/readyz"},
+		{"run prefix", "POST /run/custom", "/run/"},
+		{"stop prefix", "POST /stop/task1", "/stop/"},
+		{"result prefix", "GET /result/abc", "/result/"},
+		{"run no method", "/run/foo", "/run/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := New("n",
+				WithTask("t", dummyTask),
+				WithAuthToken("secret"),
+				WithDeadLetterDir("/tmp/dl"),
+				WithHandler(tt.pattern, h),
+			)
+			err := f.validate()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), "conflicts with reserved route") {
+				t.Errorf("error = %q, want it to contain %q", err, "conflicts with reserved route")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidate_CustomHandlerValidPatterns(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	tests := []struct {
+		name    string
+		pattern string
+	}{
+		{"api endpoint", "GET /api/orders"},
+		{"dashboard", "GET /dashboard/{path...}"},
+		{"webhook", "POST /webhook"},
+		{"healthcheck different", "GET /healthcheck"},
+		{"root", "GET /"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := New("n",
+				WithTask("t", dummyTask),
+				WithAuthToken("secret"),
+				WithDeadLetterDir("/tmp/dl"),
+				WithHandler(tt.pattern, h),
+			)
+			if err := f.validate(); err != nil {
+				t.Errorf("validate() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestWithHandler_ServesRequests(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("test-server",
+		WithTask("echo", dummyTask),
+		WithAuthToken("test-secret"),
+		WithDeadLetterDir("/tmp/test-dl"),
+		WithHandler("GET /custom", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"source": "custom"})
+		})),
+	)
+	f.logger = slog.With("server", f.name)
+	f.slots = map[string]*taskSlot{"echo": {}}
+	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
+	f.startedAt = time.Now()
+	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
+	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
+	f.deliverer.removeFunc = func(name string) error { return nil }
+	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
+	f.deliverer.sleepFunc = func(time.Duration) {}
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/custom")
+	if err != nil {
+		t.Fatalf("GET /custom: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["source"] != "custom" {
+		t.Errorf("body source = %q, want %q", body["source"], "custom")
+	}
+}
+
+func TestWithHandler_NoAuthRequired(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("test-server",
+		WithTask("echo", dummyTask),
+		WithAuthToken("test-secret"),
+		WithDeadLetterDir("/tmp/test-dl"),
+		WithHandler("GET /public", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(w, http.StatusOK, map[string]string{"access": "public"})
+		})),
+	)
+	f.logger = slog.With("server", f.name)
+	f.slots = map[string]*taskSlot{"echo": {}}
+	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
+	f.startedAt = time.Now()
+	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
+	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
+	f.deliverer.removeFunc = func(name string) error { return nil }
+	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
+	f.deliverer.sleepFunc = func(time.Duration) {}
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	// Custom handler: no auth header → should succeed.
+	resp, err := http.Get(srv.URL + "/public")
+	if err != nil {
+		t.Fatalf("GET /public: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("custom handler status = %d, want 200 (no auth needed)", resp.StatusCode)
+	}
+
+	// Built-in handler: no auth header → should get 401.
+	resp2, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Errorf("built-in handler status = %d, want 401 (auth required)", resp2.StatusCode)
+	}
+}
+
+func TestRoutePath(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    string
+	}{
+		{"GET /foo", "/foo"},
+		{"/foo", "/foo"},
+		{"POST /run/task", "/run/task"},
+		{"/health", "/health"},
+		{"example.com/api", "/api"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.pattern, func(t *testing.T) {
+			got := routePath(tt.pattern)
+			if got != tt.want {
+				t.Errorf("routePath(%q) = %q, want %q", tt.pattern, got, tt.want)
+			}
+		})
 	}
 }
 

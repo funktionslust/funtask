@@ -211,6 +211,10 @@ func (f *Server) routes() http.Handler {
 	mux.Handle("GET /result/{jobId}", authed(f.handleResult))
 	mux.Handle("GET /health", authed(f.handleHealth))
 
+	for _, r := range f.customHandlers {
+		mux.Handle(r.pattern, r.handler)
+	}
+
 	return mux
 }
 
