@@ -26,7 +26,7 @@ func TestHealthHandler_NodeInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -62,7 +62,7 @@ func TestHealthHandler_IdleTaskNoJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -112,7 +112,7 @@ func TestHealthHandler_RunningTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -184,7 +184,7 @@ func TestHealthHandler_RunningTaskStepOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -226,7 +226,7 @@ func TestHealthHandler_IdleWithLastJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -298,7 +298,7 @@ func TestHealthHandler_MultipleTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -357,7 +357,7 @@ func TestHealthHandler_IdleWithLastJob_Failed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -434,7 +434,7 @@ func TestHealthHandler_IdleWithLastJob_Async(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -497,7 +497,7 @@ func TestHealthHandler_IdleWithLastJob_SyncTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -528,7 +528,7 @@ func TestHealthHandler_Draining(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	var body healthResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -566,7 +566,7 @@ func TestReadyz_DrainingReturns503(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
@@ -590,7 +590,7 @@ func TestReadyz_DrainingWithCustomCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 (draining takes precedence over healthy custom check)", resp.StatusCode)
 	}
@@ -613,7 +613,7 @@ func TestReadyz_NotDraining_CustomCheckPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}

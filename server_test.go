@@ -109,7 +109,7 @@ func TestRoutes_LivezNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /livez: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -131,7 +131,7 @@ func TestRoutes_ReadyzNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -166,7 +166,7 @@ func TestRoutes_ReadyzFailing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /readyz: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
@@ -185,7 +185,7 @@ func TestRoutes_AuthRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -209,7 +209,7 @@ func TestRoutes_RunUnknownTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/nonexistent: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -233,7 +233,7 @@ func TestRoutes_RunKnownTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -255,7 +255,7 @@ func TestRoutes_StopRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /stop/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -269,7 +269,7 @@ func TestRoutes_ResultRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /result/some-id: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -283,7 +283,7 @@ func TestRoutes_HealthRequiresAuth(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
@@ -321,7 +321,7 @@ func TestStop_RunningJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /stop/slow: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -360,7 +360,7 @@ func TestStop_NoRunningJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /stop/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -390,7 +390,7 @@ func TestStop_UnknownTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /stop/unknown: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -468,7 +468,7 @@ func TestRoutes_ResultNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /result/some-id: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -489,7 +489,7 @@ func TestRoutes_HealthReturns200(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -515,7 +515,7 @@ func TestRoutes_MethodNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", resp.StatusCode)
 	}
@@ -548,7 +548,7 @@ func TestRunHandler_SyncSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -587,7 +587,7 @@ func TestRunHandler_EmptyBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -615,7 +615,7 @@ func TestRunHandler_InvalidJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -656,7 +656,7 @@ func TestRunHandler_BusyTask_Returns409(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow (second): %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusConflict {
 		t.Errorf("status = %d, want 409", resp.StatusCode)
 	}
@@ -741,7 +741,7 @@ func TestRunHandler_GeneratesJobID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body jobResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if !uuidPattern.MatchString(body.JobID) {
@@ -757,7 +757,7 @@ func TestRunHandler_ClientJobID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body jobResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body.JobID != "my-custom-id" {
@@ -776,7 +776,7 @@ func TestRunHandler_FailResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/fail: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -810,7 +810,7 @@ func TestRunHandler_WithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/data: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body jobResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if !body.Success {
@@ -832,7 +832,7 @@ func TestRunHandler_CallbackURL_NoAllowlist_Rejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -858,7 +858,7 @@ func TestRunHandler_CallbackURL_WithAllowlist_InvalidURL_Rejected(t *testing.T) 
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", resp.StatusCode)
 	}
@@ -910,7 +910,7 @@ func TestRunHandler_CallbackURL_WithAllowlist_ValidURL_Accepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Errorf("status = %d, want 202", resp.StatusCode)
 	}
@@ -940,7 +940,7 @@ func TestRunHandler_NoCallbackURL_NoAllowlist_SyncWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -959,7 +959,7 @@ func TestRunHandler_LastStepInError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/step: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body jobResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body.Error == nil {
@@ -983,7 +983,7 @@ func TestRunHandler_PanicRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/panic: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1015,7 +1015,7 @@ func TestRunHandler_PanicRecovery_LastStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/panic: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body jobResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body.Error == nil {
@@ -1037,7 +1037,7 @@ func TestRunHandler_PanicRecovery_NoStackInResponse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/panic: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var raw map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&raw)
 
@@ -1071,7 +1071,7 @@ func TestRunHandler_PanicRecovery_SlotReleased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/panic (second): %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (slot should be released after panic)", resp.StatusCode)
 	}
@@ -1088,7 +1088,7 @@ func TestRunHandler_PanicRecovery_NonStringValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/panic: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1124,7 +1124,7 @@ func TestRunHandler_SyncTimeout_Returns504(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Errorf("status = %d, want 504", resp.StatusCode)
 	}
@@ -1235,7 +1235,7 @@ func TestRunHandler_MaxDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1302,7 +1302,7 @@ func TestRunHandler_NormalCompletion_Unchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/fast: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1341,7 +1341,7 @@ func TestRunHandler_ContentType(t *testing.T) {
 			if err != nil {
 				t.Fatalf("POST /run/echo: %v", err)
 			}
-			defer func() { _ = resp.Body.Close() }()
+			defer closeBody(resp)
 			if resp.StatusCode != tt.want {
 				t.Errorf("status = %d, want %d", resp.StatusCode, tt.want)
 			}
@@ -1386,7 +1386,7 @@ func TestRunHandler_DuplicateRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow (duplicate): %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1436,7 +1436,7 @@ func TestRunHandler_DuplicateRunning_CurrentStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow (duplicate): %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	var body runningJobStatus
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body.CurrentStep != "doing X" {
@@ -1463,7 +1463,7 @@ func TestRunHandler_DuplicateCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo (first): %v", err)
 	}
-	defer func() { _ = resp1.Body.Close() }()
+	defer closeBody(resp1)
 	var body1 jobResponse
 	_ = json.NewDecoder(resp1.Body).Decode(&body1)
 	if !body1.Success {
@@ -1475,7 +1475,7 @@ func TestRunHandler_DuplicateCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo (duplicate): %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp2.StatusCode)
 	}
@@ -1517,7 +1517,7 @@ func TestGetResult_Found(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /result/get-result-1: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1548,7 +1548,7 @@ func TestGetResult_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /result/unknown-job-id: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", resp.StatusCode)
 	}
@@ -1639,7 +1639,7 @@ func TestRunHandler_ResultTooLarge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/big: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1677,7 +1677,7 @@ func TestRunHandler_DuplicatePerTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/task-a: %v", err)
 	}
-	defer func() { _ = respA.Body.Close() }()
+	defer closeBody(respA)
 	var bodyA jobResponse
 	_ = json.NewDecoder(respA.Body).Decode(&bodyA)
 	if !bodyA.Success {
@@ -1691,7 +1691,7 @@ func TestRunHandler_DuplicatePerTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/task-b: %v", err)
 	}
-	defer func() { _ = respB.Body.Close() }()
+	defer closeBody(respB)
 	var bodyB jobResponse
 	_ = json.NewDecoder(respB.Body).Decode(&bodyB)
 	if !bodyB.Success {
@@ -1721,7 +1721,7 @@ func TestGetResult_CrossTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /result/cross-task-1: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1790,7 +1790,7 @@ func TestRunHandler_NormalCompletion_StillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/fast: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -1826,7 +1826,7 @@ func TestRunHandler_Async_Returns202WithJobId(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusAccepted {
 		t.Errorf("status = %d, want 202", resp.StatusCode)
 	}
@@ -2074,7 +2074,7 @@ func TestRunHandler_Async_Busy409(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow (second): %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusConflict {
 		t.Errorf("status = %d, want 409", resp2.StatusCode)
 	}
@@ -2133,7 +2133,7 @@ func TestRunHandler_Async_DuplicateRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow (duplicate): %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp2.StatusCode)
 	}
@@ -2207,7 +2207,7 @@ func TestRunHandler_Async_DuplicateCached(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo (duplicate): %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp2.StatusCode)
 	}
@@ -2267,7 +2267,7 @@ func TestRunHandler_Async_SlotReleasedAfterDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo (second): %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200 (slot should be released)", resp2.StatusCode)
 	}
@@ -2338,7 +2338,7 @@ func TestHandleRun_DrainingRejects503(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/echo: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
@@ -2389,7 +2389,7 @@ func TestDraining_StopStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /stop/slow: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
 	}
@@ -2424,7 +2424,7 @@ func TestDraining_StopStillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST /run/slow: %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("draining /run status = %d, want 503", resp2.StatusCode)
 	}

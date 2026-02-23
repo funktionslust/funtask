@@ -516,7 +516,7 @@ func TestWithHandler_ServesRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /custom: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("status = %d, want 200", resp.StatusCode)
@@ -558,7 +558,7 @@ func TestWithHandler_NoAuthRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /public: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("custom handler status = %d, want 200 (no auth needed)", resp.StatusCode)
 	}
@@ -568,7 +568,7 @@ func TestWithHandler_NoAuthRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /health: %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
+	defer closeBody(resp2)
 	if resp2.StatusCode != http.StatusUnauthorized {
 		t.Errorf("built-in handler status = %d, want 401 (auth required)", resp2.StatusCode)
 	}
