@@ -16,19 +16,30 @@ import (
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
+	return testServerWith(t, Task("echo", dummyTask))
+}
+
+// testServerWith creates a test-ready Server with the given options plus
+// sensible defaults (auth, dead-letter dir, stub deliverer). The returned
+// Server has all runtime fields initialised — callers can override fields
+// (tasks, slots, …) before calling f.routes().
+func testServerWith(t *testing.T, opts ...Option) *Server {
+	t.Helper()
 	t.Setenv("FUNTASK_AUTH_TOKEN", "")
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", dummyTask),
+	defaults := []Option{
 		WithAuthToken("test-secret"),
 		WithDeadLetterDir("/tmp/test-dl"),
-	)
+	}
+	f := New("test-server", append(defaults, opts...)...)
 	f.logger = slog.With("server", f.name)
+	f.tokenBytes = []byte(f.authToken)
 	f.slots = make(map[string]*taskSlot, len(f.tasks))
 	for name := range f.tasks {
 		f.slots[name] = &taskSlot{}
 	}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
+	f.events = &eventBroker{clients: make(map[chan struct{}]struct{})}
+	f.history = newResultHistory(f.slots, f.resultHistorySize, f.taskResultSizes)
 	f.startedAt = time.Now()
 	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
 	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
@@ -46,24 +57,7 @@ func startTestServer(t *testing.T) *httptest.Server {
 
 func testServerWithTasks(t *testing.T, opts ...Option) *httptest.Server {
 	t.Helper()
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	defaults := []Option{
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	}
-	f := New("test-server", append(defaults, opts...)...)
-	f.logger = slog.With("server", f.name)
-	f.slots = make(map[string]*taskSlot, len(f.tasks))
-	for name := range f.tasks {
-		f.slots[name] = &taskSlot{}
-	}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, opts...)
 	return httptest.NewServer(f.routes())
 }
 
@@ -143,22 +137,10 @@ func TestRoutes_ReadyzNoAuth(t *testing.T) {
 }
 
 func TestRoutes_ReadyzFailing(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithReadiness(func() error {
-			return fmt.Errorf("database unavailable")
-		}),
+	f := testServerWith(t,
+		Task("echo", dummyTask),
+		WithReadiness(func() error { return fmt.Errorf("database unavailable") }),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = make(map[string]*taskSlot, len(f.tasks))
-	for name := range f.tasks {
-		f.slots[name] = &taskSlot{}
-	}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
@@ -541,7 +523,7 @@ func TestRunHandler_SyncSuccess(t *testing.T) {
 		msg, _ := params.String("msg")
 		return OK("echo: %s", msg).WithData("msg", msg)
 	})
-	srv := testServerWithTasks(t, WithTask("echo", echoTask))
+	srv := testServerWithTasks(t, Task("echo", echoTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "echo", `{"params":{"msg":"hi"}}`)
@@ -637,7 +619,7 @@ func TestRunHandler_BusyTask_Returns409(t *testing.T) {
 		<-release
 		return OK("done")
 	})
-	srv := testServerWithTasks(t, WithTask("slow", slowTask))
+	srv := testServerWithTasks(t, Task("slow", slowTask))
 	defer srv.Close()
 
 	// Start first request in background
@@ -695,7 +677,7 @@ func TestRunHandler_ConcurrentDifferentTasks(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		return OK("b done")
 	})
-	srv := testServerWithTasks(t, WithTask("task-a", taskA), WithTask("task-b", taskB))
+	srv := testServerWithTasks(t, Task("task-a", taskA), Task("task-b", taskB))
 	defer srv.Close()
 
 	var wg sync.WaitGroup
@@ -769,7 +751,7 @@ func TestRunHandler_FailResult(t *testing.T) {
 	failTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return Fail("db_error", "connection refused")
 	})
-	srv := testServerWithTasks(t, WithTask("fail", failTask))
+	srv := testServerWithTasks(t, Task("fail", failTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "fail", "")
@@ -803,7 +785,7 @@ func TestRunHandler_WithData(t *testing.T) {
 	dataTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("processed").WithData("count", 42).WithData("status", "ok")
 	})
-	srv := testServerWithTasks(t, WithTask("data", dataTask))
+	srv := testServerWithTasks(t, Task("data", dataTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "data", "")
@@ -849,7 +831,7 @@ func TestRunHandler_CallbackURL_NoAllowlist_Rejected(t *testing.T) {
 
 func TestRunHandler_CallbackURL_WithAllowlist_InvalidURL_Rejected(t *testing.T) {
 	srv := testServerWithTasks(t,
-		WithTask("echo", dummyTask),
+		Task("echo", dummyTask),
 		WithCallbackAllowlist("https://hooks.example.com"),
 	)
 	defer srv.Close()
@@ -874,31 +856,14 @@ func TestRunHandler_CallbackURL_WithAllowlist_InvalidURL_Rejected(t *testing.T) 
 
 func testAsyncServer(t *testing.T, opts ...Option) *Server {
 	t.Helper()
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	defaults := []Option{
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithCallbackAllowlist("https://hooks.example.com"),
-	}
-	f := New("test-server", append(defaults, opts...)...)
-	f.logger = slog.With("server", f.name)
-	f.slots = make(map[string]*taskSlot, len(f.tasks))
-	for name := range f.tasks {
-		f.slots[name] = &taskSlot{}
-	}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
-	return f
+	return testServerWith(t,
+		append([]Option{WithCallbackAllowlist("https://hooks.example.com")}, opts...)...,
+	)
 }
 
 func TestRunHandler_CallbackURL_WithAllowlist_ValidURL_Accepted(t *testing.T) {
 	delivered := make(chan struct{})
-	f := testAsyncServer(t, WithTask("echo", dummyTask))
+	f := testAsyncServer(t, Task("echo", dummyTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(delivered)
 		return 200, nil
@@ -952,7 +917,7 @@ func TestRunHandler_LastStepInError(t *testing.T) {
 		ctx.Step("querying orders")
 		return Fail("query_error", "timeout waiting for response")
 	})
-	srv := testServerWithTasks(t, WithTask("step", stepTask))
+	srv := testServerWithTasks(t, Task("step", stepTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "step", "")
@@ -976,7 +941,7 @@ func TestRunHandler_PanicRecovery(t *testing.T) {
 	panicTask := TaskFunc(func(ctx *Run, params Params) Result {
 		panic("something went wrong")
 	})
-	srv := testServerWithTasks(t, WithTask("panic", panicTask))
+	srv := testServerWithTasks(t, Task("panic", panicTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "panic", "")
@@ -1008,7 +973,7 @@ func TestRunHandler_PanicRecovery_LastStep(t *testing.T) {
 		ctx.Step("doing X")
 		panic("oops")
 	})
-	srv := testServerWithTasks(t, WithTask("panic", panicTask))
+	srv := testServerWithTasks(t, Task("panic", panicTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "panic", "")
@@ -1030,7 +995,7 @@ func TestRunHandler_PanicRecovery_NoStackInResponse(t *testing.T) {
 	panicTask := TaskFunc(func(ctx *Run, params Params) Result {
 		panic("boom")
 	})
-	srv := testServerWithTasks(t, WithTask("panic", panicTask))
+	srv := testServerWithTasks(t, Task("panic", panicTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "panic", "")
@@ -1056,7 +1021,7 @@ func TestRunHandler_PanicRecovery_SlotReleased(t *testing.T) {
 	panicTask := TaskFunc(func(ctx *Run, params Params) Result {
 		panic("crash")
 	})
-	srv := testServerWithTasks(t, WithTask("panic", panicTask))
+	srv := testServerWithTasks(t, Task("panic", panicTask))
 	defer srv.Close()
 
 	// First request panics
@@ -1081,7 +1046,7 @@ func TestRunHandler_PanicRecovery_NonStringValue(t *testing.T) {
 	panicTask := TaskFunc(func(ctx *Run, params Params) Result {
 		panic(42)
 	})
-	srv := testServerWithTasks(t, WithTask("panic", panicTask))
+	srv := testServerWithTasks(t, Task("panic", panicTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "panic", "")
@@ -1115,7 +1080,7 @@ func TestRunHandler_SyncTimeout_Returns504(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithSyncTimeout(50*time.Millisecond),
 	)
 	defer srv.Close()
@@ -1152,7 +1117,7 @@ func TestRunHandler_SyncTimeout_CancelsContext(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithSyncTimeout(50*time.Millisecond),
 	)
 	defer srv.Close()
@@ -1183,7 +1148,7 @@ func TestRunHandler_SyncTimeout_SlotReleased(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithSyncTimeout(50*time.Millisecond),
 	)
 	defer srv.Close()
@@ -1225,7 +1190,7 @@ func TestRunHandler_MaxDuration(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithMaxDuration(50*time.Millisecond),
 		WithSyncTimeout(5*time.Second),
 	)
@@ -1269,7 +1234,7 @@ func TestRunHandler_MaxDuration_CancelsContext(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithMaxDuration(50*time.Millisecond),
 		WithSyncTimeout(5*time.Second),
 	)
@@ -1295,7 +1260,7 @@ func TestRunHandler_NormalCompletion_Unchanged(t *testing.T) {
 	fastTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("fast result")
 	})
-	srv := testServerWithTasks(t, WithTask("fast", fastTask))
+	srv := testServerWithTasks(t, Task("fast", fastTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "fast", "")
@@ -1368,7 +1333,7 @@ func TestRunHandler_DuplicateRunning(t *testing.T) {
 		<-release
 		return OK("done")
 	})
-	srv := testServerWithTasks(t, WithTask("slow", slowTask))
+	srv := testServerWithTasks(t, Task("slow", slowTask))
 	defer srv.Close()
 
 	var firstResp *http.Response
@@ -1419,7 +1384,7 @@ func TestRunHandler_DuplicateRunning_CurrentStep(t *testing.T) {
 		<-release
 		return OK("done")
 	})
-	srv := testServerWithTasks(t, WithTask("slow", slowTask))
+	srv := testServerWithTasks(t, Task("slow", slowTask))
 	defer srv.Close()
 
 	var firstResp *http.Response
@@ -1455,7 +1420,7 @@ func TestRunHandler_DuplicateCompleted(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("echo result").WithData("key", "val")
 	})
-	srv := testServerWithTasks(t, WithTask("echo", echoTask))
+	srv := testServerWithTasks(t, Task("echo", echoTask))
 	defer srv.Close()
 
 	// First request
@@ -1502,7 +1467,7 @@ func TestGetResult_Found(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("cached result").WithData("found", true)
 	})
-	srv := testServerWithTasks(t, WithTask("echo", echoTask))
+	srv := testServerWithTasks(t, Task("echo", echoTask))
 	defer srv.Close()
 
 	// Run the task first
@@ -1559,71 +1524,108 @@ func TestGetResult_NotFound(t *testing.T) {
 	}
 }
 
-func TestResultCache_Expiry(t *testing.T) {
-	c := &resultCache{entries: make(map[string]*resultCacheEntry)}
-	resp := jobResponse{JobID: "exp-1", Success: true, Duration: "1ms"}
+func TestResultHistory_List(t *testing.T) {
+	slots := map[string]*taskSlot{"task": {}}
+	h := newResultHistory(slots, 10, nil)
 
-	// Manually insert an already-expired entry.
-	c.mu.Lock()
-	c.entries[cacheKey("task", "exp-1")] = &resultCacheEntry{
-		taskName:  "task",
-		jobID:     "exp-1",
-		response:  resp,
-		expiresAt: time.Now().Add(-1 * time.Second),
+	h.store("task", "job-1", jobResponse{JobID: "job-1", Success: true, Message: "first", Duration: "1ms"})
+	h.store("task", "job-2", jobResponse{JobID: "job-2", Success: false, Duration: "2ms", Error: &jobError{Code: "err", Message: "fail"}})
+	h.store("task", "job-3", jobResponse{JobID: "job-3", Success: true, Message: "third", Duration: "3ms"})
+
+	entries := h.list("task")
+	if len(entries) != 3 {
+		t.Fatalf("list length = %d, want 3", len(entries))
 	}
-	c.mu.Unlock()
-
-	// lookup should return false for expired entry.
-	if _, ok := c.lookup("task", "exp-1"); ok {
-		t.Error("lookup returned true for expired entry, want false")
+	// Newest first.
+	if entries[0].jobID != "job-3" {
+		t.Errorf("entries[0].jobID = %q, want %q", entries[0].jobID, "job-3")
 	}
-
-	// lookupByJobID should also return false.
-	if _, ok := c.lookupByJobID("exp-1"); ok {
-		t.Error("lookupByJobID returned true for expired entry, want false")
+	if entries[2].jobID != "job-1" {
+		t.Errorf("entries[2].jobID = %q, want %q", entries[2].jobID, "job-1")
+	}
+	// finishedAt should be set.
+	for i, e := range entries {
+		if e.finishedAt.IsZero() {
+			t.Errorf("entries[%d].finishedAt is zero", i)
+		}
 	}
 }
 
-func TestResultCache_LazyEviction(t *testing.T) {
-	c := &resultCache{entries: make(map[string]*resultCacheEntry)}
+func TestResultHistory_ListAfterEviction(t *testing.T) {
+	slots := map[string]*taskSlot{"task": {}}
+	h := newResultHistory(slots, 2, nil)
 
-	// Insert two expired entries.
-	c.mu.Lock()
-	c.entries[cacheKey("task", "old-1")] = &resultCacheEntry{
-		taskName:  "task",
-		jobID:     "old-1",
-		response:  jobResponse{JobID: "old-1"},
-		expiresAt: time.Now().Add(-1 * time.Second),
-	}
-	c.entries[cacheKey("task", "old-2")] = &resultCacheEntry{
-		taskName:  "task",
-		jobID:     "old-2",
-		response:  jobResponse{JobID: "old-2"},
-		expiresAt: time.Now().Add(-1 * time.Second),
-	}
-	c.mu.Unlock()
+	h.store("task", "job-1", jobResponse{JobID: "job-1", Duration: "1ms"})
+	h.store("task", "job-2", jobResponse{JobID: "job-2", Duration: "1ms"})
+	h.store("task", "job-3", jobResponse{JobID: "job-3", Duration: "1ms"})
 
-	// store() should evict the expired entries.
-	c.store("task", "new-1", jobResponse{JobID: "new-1", Success: true, Duration: "1ms"})
+	entries := h.list("task")
+	if len(entries) != 2 {
+		t.Fatalf("list length = %d, want 2", len(entries))
+	}
+	if entries[0].jobID != "job-3" {
+		t.Errorf("entries[0].jobID = %q, want %q (newest first)", entries[0].jobID, "job-3")
+	}
+	if entries[1].jobID != "job-2" {
+		t.Errorf("entries[1].jobID = %q, want %q", entries[1].jobID, "job-2")
+	}
+}
 
-	c.mu.RLock()
-	count := len(c.entries)
-	_, hasOld1 := c.entries[cacheKey("task", "old-1")]
-	_, hasOld2 := c.entries[cacheKey("task", "old-2")]
-	_, hasNew := c.entries[cacheKey("task", "new-1")]
-	c.mu.RUnlock()
+func TestResultHistory_ListUnknownTask(t *testing.T) {
+	slots := map[string]*taskSlot{"task": {}}
+	h := newResultHistory(slots, 10, nil)
 
-	if hasOld1 {
-		t.Error("expired entry old-1 still in cache after store")
+	if entries := h.list("nonexistent"); entries != nil {
+		t.Errorf("list for unknown task = %v, want nil", entries)
 	}
-	if hasOld2 {
-		t.Error("expired entry old-2 still in cache after store")
+}
+
+func TestResultHistory_LimitEviction(t *testing.T) {
+	slots := map[string]*taskSlot{"task": {}}
+	h := newResultHistory(slots, 2, nil) // limit 2 per task
+
+	h.store("task", "job-1", jobResponse{JobID: "job-1", Success: true, Duration: "1ms"})
+	h.store("task", "job-2", jobResponse{JobID: "job-2", Success: true, Duration: "1ms"})
+	h.store("task", "job-3", jobResponse{JobID: "job-3", Success: true, Duration: "1ms"})
+
+	// job-1 should be evicted (limit=2, only job-2 and job-3 remain).
+	if _, ok := h.lookup("task", "job-1"); ok {
+		t.Error("lookup returned true for evicted entry, want false")
 	}
-	if !hasNew {
-		t.Error("new entry not found in cache after store")
+	if _, ok := h.lookupByJobID("job-1"); ok {
+		t.Error("lookupByJobID returned true for evicted entry, want false")
 	}
-	if count != 1 {
-		t.Errorf("cache size = %d, want 1", count)
+
+	// job-2 and job-3 should still be present.
+	if _, ok := h.lookup("task", "job-2"); !ok {
+		t.Error("lookup returned false for job-2, want true")
+	}
+	if _, ok := h.lookup("task", "job-3"); !ok {
+		t.Error("lookup returned false for job-3, want true")
+	}
+}
+
+func TestResultHistory_PerTaskOverride(t *testing.T) {
+	slots := map[string]*taskSlot{"small": {}, "big": {}}
+	h := newResultHistory(slots, 2, map[string]int{"big": 5})
+
+	// Verify "small" uses the server default limit.
+	for i := range 3 {
+		h.store("small", fmt.Sprintf("s-%d", i), jobResponse{JobID: fmt.Sprintf("s-%d", i), Duration: "1ms"})
+	}
+	if _, ok := h.lookup("small", "s-0"); ok {
+		t.Error("small task: oldest entry should be evicted at limit 2")
+	}
+
+	// Verify "big" uses the per-task override limit.
+	for i := range 6 {
+		h.store("big", fmt.Sprintf("b-%d", i), jobResponse{JobID: fmt.Sprintf("b-%d", i), Duration: "1ms"})
+	}
+	if _, ok := h.lookup("big", "b-0"); ok {
+		t.Error("big task: oldest entry should be evicted at limit 5")
+	}
+	if _, ok := h.lookup("big", "b-1"); !ok {
+		t.Error("big task: b-1 should still be present within limit 5")
 	}
 }
 
@@ -1632,7 +1634,7 @@ func TestRunHandler_ResultTooLarge(t *testing.T) {
 		big := make([]byte, 11<<20) // 11 MB
 		return OK("big").WithData("payload", string(big))
 	})
-	srv := testServerWithTasks(t, WithTask("big", bigTask))
+	srv := testServerWithTasks(t, Task("big", bigTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "big", `{"jobId":"big-1"}`)
@@ -1669,7 +1671,7 @@ func TestRunHandler_DuplicatePerTask(t *testing.T) {
 	taskB := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("from B").WithData("task", "b")
 	})
-	srv := testServerWithTasks(t, WithTask("task-a", taskA), WithTask("task-b", taskB))
+	srv := testServerWithTasks(t, Task("task-a", taskA), Task("task-b", taskB))
 	defer srv.Close()
 
 	// Run same jobId on task-a and task-b — both should execute independently.
@@ -1706,7 +1708,7 @@ func TestGetResult_CrossTask(t *testing.T) {
 	taskA := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("from task-a")
 	})
-	srv := testServerWithTasks(t, WithTask("task-a", taskA))
+	srv := testServerWithTasks(t, Task("task-a", taskA))
 	defer srv.Close()
 
 	// Complete task-a with a specific jobId.
@@ -1748,7 +1750,7 @@ func TestRunHandler_SyncTimeout_CachesResult(t *testing.T) {
 		}
 	})
 	srv := testServerWithTasks(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithSyncTimeout(50*time.Millisecond),
 	)
 	defer srv.Close()
@@ -1783,7 +1785,7 @@ func TestRunHandler_NormalCompletion_StillWorks(t *testing.T) {
 	fastTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("regression check")
 	})
-	srv := testServerWithTasks(t, WithTask("fast", fastTask))
+	srv := testServerWithTasks(t, Task("fast", fastTask))
 	defer srv.Close()
 
 	resp, err := postRun(srv, "fast", "")
@@ -1814,7 +1816,7 @@ func TestRunHandler_NormalCompletion_StillWorks(t *testing.T) {
 
 func TestRunHandler_Async_Returns202WithJobId(t *testing.T) {
 	done := make(chan struct{})
-	f := testAsyncServer(t, WithTask("echo", dummyTask))
+	f := testAsyncServer(t, Task("echo", dummyTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(done)
 		return 200, nil
@@ -1857,7 +1859,7 @@ func TestRunHandler_Async_DeliveryChain(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("async result").WithData("key", "val")
 	})
-	f := testAsyncServer(t, WithTask("echo", echoTask))
+	f := testAsyncServer(t, Task("echo", echoTask))
 	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error {
 		dlWritten = data
 		return nil
@@ -1938,7 +1940,7 @@ func TestRunHandler_Async_PanicRecovery(t *testing.T) {
 		ctx.Step("setup")
 		panic("async boom")
 	})
-	f := testAsyncServer(t, WithTask("panic", panicTask))
+	f := testAsyncServer(t, Task("panic", panicTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		done <- data
 		return 200, nil
@@ -1999,7 +2001,7 @@ func TestRunHandler_Async_MaxDurationExceeded(t *testing.T) {
 		}
 	})
 	f := testAsyncServer(t,
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithMaxDuration(50*time.Millisecond),
 	)
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
@@ -2052,7 +2054,7 @@ func TestRunHandler_Async_Busy409(t *testing.T) {
 		<-release
 		return OK("done")
 	})
-	f := testAsyncServer(t, WithTask("slow", slowTask))
+	f := testAsyncServer(t, Task("slow", slowTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
@@ -2111,7 +2113,7 @@ func TestRunHandler_Async_DuplicateRunning(t *testing.T) {
 		<-release
 		return OK("done")
 	})
-	f := testAsyncServer(t, WithTask("slow", slowTask))
+	f := testAsyncServer(t, Task("slow", slowTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
@@ -2167,7 +2169,7 @@ func TestRunHandler_Async_DuplicateCached(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("cached async").WithData("k", "v")
 	})
-	f := testAsyncServer(t, WithTask("echo", echoTask))
+	f := testAsyncServer(t, Task("echo", echoTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(done)
 		return 200, nil
@@ -2229,7 +2231,7 @@ func TestRunHandler_Async_SlotReleasedAfterDelivery(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("done")
 	})
-	f := testAsyncServer(t, WithTask("echo", echoTask))
+	f := testAsyncServer(t, Task("echo", echoTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(done)
 		return 200, nil
@@ -2278,7 +2280,7 @@ func TestRunHandler_Async_ResultCachedAfterDelivery(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("async cached result")
 	})
-	f := testAsyncServer(t, WithTask("echo", echoTask))
+	f := testAsyncServer(t, Task("echo", echoTask))
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(done)
 		return 200, nil
@@ -2436,7 +2438,7 @@ func TestRunHandler_Async_DeadLetterWriteFailure(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("should not deliver")
 	})
-	f := testAsyncServer(t, WithTask("echo", echoTask))
+	f := testAsyncServer(t, Task("echo", echoTask))
 	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("disk full")
 	}

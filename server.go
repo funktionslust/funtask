@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"sync"
@@ -13,8 +14,8 @@ import (
 )
 
 const (
-	resultCacheTTL = 5 * time.Minute
-	maxResultSize  = 10 << 20 // 10 MB
+	maxResultSize        = 10 << 20 // 10 MB
+	defaultResultHistory = 10
 )
 
 type errorResponse struct {
@@ -66,27 +67,42 @@ type runningJobStatus struct {
 	CurrentStep string `json:"currentStep,omitempty"`
 }
 
-type resultCacheEntry struct {
-	taskName  string
-	jobID     string
-	response  jobResponse
-	expiresAt time.Time
+type resultEntry struct {
+	jobID      string
+	response   jobResponse
+	finishedAt time.Time
 }
 
-type resultCache struct {
-	mu      sync.RWMutex
-	entries map[string]*resultCacheEntry
+type taskResults struct {
+	entries []resultEntry // newest at end
+	limit   int
 }
 
-func cacheKey(task, jobID string) string {
-	return task + "\x00" + jobID
+type resultHistory struct {
+	mu    sync.RWMutex
+	tasks map[string]*taskResults
 }
 
-// store caches a job response. If the serialized response exceeds the
-// maximum result size, it is replaced with a result_too_large error.
-// Expired entries are evicted on every store call. The (possibly
-// replaced) response is returned for use by the caller.
-func (c *resultCache) store(task, jobID string, resp jobResponse) jobResponse {
+func newResultHistory(slots map[string]*taskSlot, serverDefault int, perTask map[string]int) *resultHistory {
+	if serverDefault <= 0 {
+		serverDefault = defaultResultHistory
+	}
+	tasks := make(map[string]*taskResults, len(slots))
+	for name := range slots {
+		limit := serverDefault
+		if n, ok := perTask[name]; ok && n > 0 {
+			limit = n
+		}
+		tasks[name] = &taskResults{limit: limit}
+	}
+	return &resultHistory{tasks: tasks}
+}
+
+// store saves a job response in the task's result history. If the
+// serialized response exceeds the maximum result size, it is replaced
+// with a result_too_large error. The (possibly replaced) response is
+// returned for use by the caller.
+func (h *resultHistory) store(task, jobID string, resp jobResponse) jobResponse {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		resp = jobResponse{
@@ -110,60 +126,96 @@ func (c *resultCache) store(task, jobID string, resp jobResponse) jobResponse {
 		}
 	}
 
-	now := time.Now()
-	c.mu.Lock()
-	for k, e := range c.entries {
-		if now.After(e.expiresAt) {
-			delete(c.entries, k)
-		}
+	h.mu.Lock()
+	tr, ok := h.tasks[task]
+	if !ok {
+		tr = &taskResults{limit: defaultResultHistory}
+		h.tasks[task] = tr
 	}
-	c.entries[cacheKey(task, jobID)] = &resultCacheEntry{
-		taskName:  task,
-		jobID:     jobID,
-		response:  resp,
-		expiresAt: now.Add(resultCacheTTL),
+	tr.entries = append(tr.entries, resultEntry{jobID: jobID, response: resp, finishedAt: time.Now()})
+	if len(tr.entries) > tr.limit {
+		tr.entries = tr.entries[len(tr.entries)-tr.limit:]
 	}
-	c.mu.Unlock()
+	h.mu.Unlock()
 	return resp
 }
 
-// lookup returns a cached result for a specific task and jobID.
-func (c *resultCache) lookup(task, jobID string) (jobResponse, bool) {
-	key := cacheKey(task, jobID)
-	c.mu.RLock()
-	e, ok := c.entries[key]
-	c.mu.RUnlock()
+// lookup returns a stored result for a specific task and jobID.
+func (h *resultHistory) lookup(task, jobID string) (jobResponse, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	tr, ok := h.tasks[task]
 	if !ok {
 		return jobResponse{}, false
 	}
-	if time.Now().After(e.expiresAt) {
-		// Re-check under write lock to avoid deleting a concurrently-replaced fresh entry.
-		c.mu.Lock()
-		if cur, ok := c.entries[key]; ok && time.Now().After(cur.expiresAt) {
-			delete(c.entries, key)
-		}
-		c.mu.Unlock()
-		return jobResponse{}, false
-	}
-	return e.response, true
-}
-
-// lookupByJobID searches across all tasks for a cached result
-// matching the given jobID. First non-expired match wins.
-// Expired entries are skipped but not deleted — store() handles eviction.
-func (c *resultCache) lookupByJobID(jobID string) (jobResponse, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	now := time.Now()
-	for _, e := range c.entries {
-		if now.After(e.expiresAt) {
-			continue
-		}
-		if e.jobID == jobID {
-			return e.response, true
+	for i := len(tr.entries) - 1; i >= 0; i-- {
+		if tr.entries[i].jobID == jobID {
+			return tr.entries[i].response, true
 		}
 	}
 	return jobResponse{}, false
+}
+
+// lookupByJobID searches across all tasks for a result matching the
+// given jobID. First match wins (searches newest entries first).
+func (h *resultHistory) lookupByJobID(jobID string) (jobResponse, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, tr := range h.tasks {
+		for i := len(tr.entries) - 1; i >= 0; i-- {
+			if tr.entries[i].jobID == jobID {
+				return tr.entries[i].response, true
+			}
+		}
+	}
+	return jobResponse{}, false
+}
+
+// list returns a copy of stored results for a task, newest first.
+func (h *resultHistory) list(task string) []resultEntry {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	tr, ok := h.tasks[task]
+	if !ok {
+		return nil
+	}
+	n := len(tr.entries)
+	out := make([]resultEntry, n)
+	for i, e := range tr.entries {
+		out[n-1-i] = e
+	}
+	return out
+}
+
+// healthResults returns stored results for a task as healthResult values,
+// newest first. Returns nil for unknown tasks or tasks with no results.
+func (h *resultHistory) healthResults(task string) []healthResult {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	tr, ok := h.tasks[task]
+	if !ok || len(tr.entries) == 0 {
+		return nil
+	}
+	n := len(tr.entries)
+	results := make([]healthResult, n)
+	for i, e := range tr.entries {
+		hr := healthResult{
+			JobID:    e.jobID,
+			Success:  e.response.Success,
+			Duration: e.response.Duration,
+			Finished: e.finishedAt.Format(time.RFC3339),
+		}
+		if e.response.Success {
+			hr.Message = e.response.Message
+		} else {
+			hr.Error = e.response.Error
+			if e.response.Error != nil {
+				hr.Message = e.response.Error.Message
+			}
+		}
+		results[n-1-i] = hr
+	}
+	return results
 }
 
 // buildJobResponse creates a jobResponse from a task Result.
@@ -204,12 +256,20 @@ func (f *Server) routes() http.Handler {
 
 	// Authenticated endpoints
 	authed := func(handler http.HandlerFunc) http.Handler {
-		return requireToken(f.authToken, handler)
+		return requireToken(f.tokenBytes, handler)
 	}
 	mux.Handle("POST /run/{task}", authed(f.handleRun))
 	mux.Handle("POST /stop/{task}", authed(f.handleStop))
 	mux.Handle("GET /result/{jobId}", authed(f.handleResult))
 	mux.Handle("GET /health", authed(f.handleHealth))
+	mux.HandleFunc("GET /events", f.handleEvents)
+
+	// Dashboard HTML is served without bearer-token auth. The page handles
+	// authentication client-side by prompting for the token and calling
+	// /health (which requires auth) before showing any server data.
+	if f.dashboardEnabled {
+		mux.HandleFunc("GET /dashboard", serveDashboard)
+	}
 
 	for _, r := range f.customHandlers {
 		mux.Handle(r.pattern, r.handler)
@@ -266,7 +326,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	log := f.logger.With("task", taskName, "jobId", jobID)
 
 	// Check result cache for completed duplicate.
-	if cached, ok := f.cache.lookup(taskName, jobID); ok {
+	if cached, ok := f.history.lookup(taskName, jobID); ok {
 		log.Debug("duplicate detection: returning cached result")
 		writeJSON(w, http.StatusOK, cached)
 		return
@@ -312,7 +372,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			jobCtx, jobCancel = context.WithCancel(context.Background())
 		}
 
-		run := &Run{Context: jobCtx}
+		run := &Run{Context: jobCtx, onChange: f.events.notify}
 		startedAt := time.Now()
 
 		slot.running = true
@@ -323,6 +383,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		slot.callbackURL = req.CallbackURL
 		f.wg.Add(1)
 		slot.mu.Unlock()
+		f.events.notify()
 
 		log.Info("async job started")
 
@@ -336,22 +397,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			defer f.wg.Done()
 			defer jobCancel()
 
-			// Run task with panic recovery.
-			var result Result
-			func() {
-				defer func() {
-					if v := recover(); v != nil {
-						stack := debug.Stack()
-						log.Error("panic recovered in task", "panic", v, "stack", string(stack))
-						result = Fail("panic", "%v", v)
-						result.LastStep = run.currentStep()
-					}
-				}()
-				result = taskFunc(run, params)
-				if result.LastStep == "" && run.currentStep() != "" {
-					result.LastStep = run.currentStep()
-				}
-			}()
+			result := safeRunTask(taskFunc, run, params, log)
 
 			// Check for max duration exceeded.
 			if f.maxDuration > 0 && jobCtx.Err() == context.DeadlineExceeded {
@@ -398,9 +444,10 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			f.cache.store(taskName, jobID, resp)
+			f.history.store(taskName, jobID, resp)
 
 			slot.release(jobID, resp.Success, duration)
+			f.events.notify()
 
 			attrs := []any{"success", result.Success, "duration", duration}
 			if result.cause != nil {
@@ -426,7 +473,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 	defer jobCancel() // safety net — explicit calls below are the primary cancel points
 
-	run := &Run{Context: jobCtx}
+	run := &Run{Context: jobCtx, onChange: f.events.notify}
 	startedAt := time.Now()
 
 	slot.running = true
@@ -435,7 +482,14 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	slot.cancel = jobCancel
 	slot.run = run
 	f.wg.Add(1)
+	syncOwnsWG := true
+	defer func() {
+		if syncOwnsWG {
+			f.wg.Done()
+		}
+	}()
 	slot.mu.Unlock() // unlock after slot acquisition — must not hold during task execution
+	f.events.notify()
 
 	log.Info("job started")
 
@@ -447,20 +501,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	// Run task in a goroutine for panic recovery and timeout select.
 	done := make(chan Result, 1)
 	go func() {
-		defer func() {
-			if v := recover(); v != nil {
-				stack := debug.Stack()
-				log.Error("panic recovered in task", "panic", v, "stack", string(stack))
-				res := Fail("panic", "%v", v)
-				res.LastStep = run.currentStep()
-				done <- res
-			}
-		}()
-		result := taskFunc(run, params)
-		if result.LastStep == "" && run.currentStep() != "" {
-			result.LastStep = run.currentStep()
-		}
-		done <- result
+		done <- safeRunTask(taskFunc, run, params, log)
 	}()
 
 	syncTimer := time.NewTimer(f.syncTimeout)
@@ -474,6 +515,9 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		jobCancel()
 		log.Warn("sync timeout exceeded", "timeout", f.syncTimeout)
 
+		// Transfer WaitGroup ownership to the background goroutine.
+		syncOwnsWG = false
+
 		// Background goroutine waits for task to finish, caches result, then releases slot.
 		go func() {
 			defer f.wg.Done()
@@ -485,10 +529,11 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			slot.mu.Unlock()
 
 			d := time.Since(startedAt).Round(time.Millisecond).String()
-			r := buildJobResponse(jobID, timedOutResult, d)
-			r = f.cache.store(taskName, jobID, r)
+			resp := buildJobResponse(jobID, timedOutResult, d)
+			resp = f.history.store(taskName, jobID, resp)
 
-			slot.release(jobID, r.Success, d)
+			slot.release(jobID, resp.Success, d)
+			f.events.notify()
 			log.Info("job released after sync timeout")
 		}()
 
@@ -509,9 +554,10 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	duration := time.Since(startedAt).Round(time.Millisecond).String()
 	resp := buildJobResponse(jobID, result, duration)
-	resp = f.cache.store(taskName, jobID, resp)
+	resp = f.history.store(taskName, jobID, resp)
 
 	slot.release(jobID, resp.Success, duration)
+	f.events.notify()
 
 	writeJSON(w, http.StatusOK, resp)
 	attrs := []any{"success", result.Success, "duration", duration}
@@ -519,7 +565,25 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		attrs = append(attrs, "error", result.cause)
 	}
 	log.Info("job completed", attrs...)
-	f.wg.Done()
+}
+
+// safeRunTask executes fn with panic recovery. If the task panics, the
+// panic value is logged and converted to a Fail result with code "panic".
+// The last step is always propagated to the result for diagnostic context.
+func safeRunTask(fn TaskFunc, run *Run, params Params, log *slog.Logger) (result Result) {
+	defer func() {
+		if v := recover(); v != nil {
+			stack := debug.Stack()
+			log.Error("panic recovered in task", "panic", v, "stack", string(stack))
+			result = Fail("panic", "%v", v)
+			result.LastStep = run.currentStep()
+		}
+	}()
+	result = fn(run, params)
+	if result.LastStep == "" && run.currentStep() != "" {
+		result.LastStep = run.currentStep()
+	}
+	return result
 }
 
 // release records last-job stats and resets the slot for the next job.
@@ -585,7 +649,7 @@ func (f *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 
 func (f *Server) handleResult(w http.ResponseWriter, r *http.Request) {
 	jobID := r.PathValue("jobId")
-	if cached, ok := f.cache.lookupByJobID(jobID); ok {
+	if cached, ok := f.history.lookupByJobID(jobID); ok {
 		writeJSON(w, http.StatusOK, cached)
 		return
 	}

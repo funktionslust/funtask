@@ -14,7 +14,7 @@ func okHandler() http.HandlerFunc {
 }
 
 func TestRequireToken_NoHeader(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	handler.ServeHTTP(w, r)
@@ -29,7 +29,7 @@ func TestRequireToken_NoHeader(t *testing.T) {
 }
 
 func TestRequireToken_WrongToken(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Authorization", "Bearer wrong-token")
@@ -45,7 +45,7 @@ func TestRequireToken_WrongToken(t *testing.T) {
 }
 
 func TestRequireToken_ValidToken(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Authorization", "Bearer secret")
@@ -61,7 +61,7 @@ func TestRequireToken_ValidToken(t *testing.T) {
 }
 
 func TestRequireToken_EmptyBearer(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Authorization", "Bearer ")
@@ -77,7 +77,7 @@ func TestRequireToken_EmptyBearer(t *testing.T) {
 }
 
 func TestRequireToken_WrongScheme(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	r.Header.Set("Authorization", "Basic c2VjcmV0")
@@ -193,7 +193,7 @@ func TestValidateCallbackURL_CaseInsensitiveSchemeAndHost(t *testing.T) {
 }
 
 func TestRequireToken_CaseSensitiveBearer(t *testing.T) {
-	handler := requireToken("secret", okHandler())
+	handler := requireToken([]byte("secret"), okHandler())
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	// "bearer" lowercase — RFC 6750 specifies "Bearer" with capital B

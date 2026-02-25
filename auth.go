@@ -52,19 +52,23 @@ func validateCallbackURL(rawURL string, allowlist []string) error {
 	return fmt.Errorf("callback URL not allowed")
 }
 
+// checkBearerHeader returns true if the request carries a valid Bearer
+// token in the Authorization header. Used by requireToken middleware
+// and the SSE endpoint (which also accepts a query-param fallback).
+func checkBearerHeader(r *http.Request, tokenBytes []byte) bool {
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(auth[len(prefix):]), tokenBytes) == 1
+}
+
 // requireToken returns middleware that enforces bearer token
 // authentication. Requests without a valid token receive 401.
-func requireToken(token string, next http.Handler) http.Handler {
-	tokenBytes := []byte(token)
+func requireToken(tokenBytes []byte, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		const prefix = "Bearer "
-		if len(auth) < len(prefix) || auth[:len(prefix)] != prefix {
-			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
-			return
-		}
-		provided := []byte(auth[len(prefix):])
-		if subtle.ConstantTimeCompare(provided, tokenBytes) != 1 {
+		if !checkBearerHeader(r, tokenBytes) {
 			writeJSON(w, http.StatusUnauthorized, errorResponse{Error: "unauthorized"})
 			return
 		}

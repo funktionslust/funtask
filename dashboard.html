@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en" data-version="dev">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>funtask Dashboard</title>
+<style>
+/* ── Custom Properties ── */
+:root {
+  --color-ok: #22c55e;
+  --color-error: #ef4444;
+  --color-running: #eab308;
+  --color-muted: #6b7280;
+  --color-light-muted: #9ca3af;
+  --color-border: #d1d5db;
+  --color-primary: #3b82f6;
+  --color-primary-hover: #2563eb;
+  --color-bg: #f5f5f7;
+  --color-surface: #fff;
+  --color-text: #1f2937;
+  --font-mono: "SF Mono", Monaco, Consolas, monospace;
+}
+
+/* ── Reset ── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+/* ── Auth Screen ── */
+#auth {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--color-bg); z-index: 100;
+}
+#auth.hidden { display: none; }
+.auth-box { text-align: center; max-width: 320px; width: 100%; padding: 0 1rem; }
+.auth-box h1 { font-size: 1.5rem; font-weight: 600; margin-bottom: .25rem; }
+.auth-box p { color: var(--color-muted); font-size: .875rem; margin-bottom: 1.5rem; }
+.auth-box input {
+  width: 100%; padding: .75rem 1rem;
+  border: 1px solid var(--color-border); border-radius: 8px;
+  font-size: 1rem; outline: none; transition: border-color .15s;
+}
+.auth-box input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(59,130,246,.1); }
+.auth-box button {
+  margin-top: .75rem; width: 100%; padding: .625rem; border-radius: 8px;
+  border: none; background: var(--color-primary); color: var(--color-surface);
+  font-size: .9rem; cursor: pointer; font-family: inherit;
+}
+.auth-box button:hover { background: var(--color-primary-hover); }
+.auth-error { color: var(--color-error); font-size: .8rem; margin-top: .5rem; min-height: 1.2em; }
+
+/* ── Header ── */
+header {
+  padding: 1rem 1.5rem; background: var(--color-surface);
+  border-bottom: 1px solid #e5e7eb;
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: .5rem;
+}
+header h1 { font-size: 1.125rem; font-weight: 600; }
+header h1 span { font-weight: 400; color: var(--color-light-muted); font-size: .8rem; margin-left: .5rem; }
+.status-bar { display: flex; gap: 1rem; font-size: .8rem; color: var(--color-muted); }
+.dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 4px; vertical-align: middle;
+}
+.dot-ok { background: var(--color-ok); }
+.dot-error { background: var(--color-error); }
+.dot-running { background: var(--color-running); }
+
+/* ── Task List ── */
+.tasks {
+  padding: 1.5rem;
+  display: flex; flex-direction: column; gap: 1rem;
+  max-width: 960px; margin: 0 auto;
+}
+.empty { text-align: center; color: var(--color-light-muted); padding: 4rem 1rem; font-size: .9rem; }
+
+/* ── Card ── */
+.card {
+  background: var(--color-surface); border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  border-left: 4px solid var(--color-border);
+  transition: border-color .2s, box-shadow .2s;
+  display: grid; grid-template-columns: 1fr 1fr; min-height: 0;
+}
+.card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+.card.card-ok { border-left-color: var(--color-ok); }
+.card.card-error { border-left-color: var(--color-error); }
+.card.card-running { border-left-color: var(--color-running); }
+
+/* ── Card Left: Status ── */
+.card-left { padding: 1.25rem; display: flex; flex-direction: column; }
+.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
+.task-name { font-weight: 600; font-size: 1rem; }
+.task-desc { font-size: .8rem; color: var(--color-muted); margin-bottom: .5rem; }
+.meta { font-size: .75rem; color: var(--color-light-muted); margin-top: auto; }
+
+/* ── Badge ── */
+.badge {
+  font-size: .7rem; padding: 2px 8px; border-radius: 99px;
+  font-weight: 500; text-transform: uppercase; letter-spacing: .03em;
+  flex-shrink: 0;
+}
+.badge-idle { background: #f3f4f6; color: var(--color-muted); }
+.badge-ok { background: #dcfce7; color: #166534; }
+.badge-error { background: #fee2e2; color: #991b1b; }
+.badge-running { background: #fef9c3; color: #854d0e; }
+
+/* ── Result Box (left panel, replaces err-box) ── */
+.result-box {
+  border-radius: 6px;
+  padding: .5rem .75rem; margin-bottom: .5rem; font-size: .8rem;
+}
+.result-box-error {
+  background: #fef2f2; border: 1px solid #fecaca;
+}
+.result-box-error .result-code { font-weight: 600; color: #991b1b; }
+.result-box-error .result-message { color: #7f1d1d; margin-top: 2px; }
+.result-box-ok {
+  background: #f0fdf4; border: 1px solid #bbf7d0;
+}
+.result-box-ok .result-message { color: #166534; }
+
+/* ── Progress ── */
+.prog { margin-bottom: .5rem; }
+.prog-bar { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin-bottom: 4px; }
+.prog-fill { height: 100%; background: var(--color-running); border-radius: 3px; transition: width .3s; }
+.prog-txt { font-size: .75rem; color: var(--color-muted); }
+
+/* ── Card Right: Tabs ── */
+.card-right {
+  padding: 1.25rem; border-left: 1px solid #f3f4f6;
+  display: flex; flex-direction: column;
+}
+.tabs {
+  display: flex; gap: 0; margin-bottom: .75rem;
+  border-bottom: 1px solid var(--color-border);
+  align-items: center;
+}
+.tabs .spacer { flex: 1; }
+.tab {
+  padding: .375rem .75rem; font-size: .8rem; font-family: inherit;
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--color-muted); cursor: pointer; transition: all .15s;
+}
+.tab:hover { color: var(--color-text); }
+.tab.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
+.tab-panel { display: none; flex: 1; flex-direction: column; }
+.tab-panel.active { display: flex; }
+
+/* ── Params Panel ── */
+.params-input {
+  width: 100%; padding: .5rem; flex: 1; min-height: 48px;
+  border: 1px solid var(--color-border); border-radius: 6px;
+  font-family: var(--font-mono); font-size: .8rem; resize: vertical;
+}
+.params-hint { font-size: .75rem; color: var(--color-light-muted); margin-top: .25rem; }
+
+/* ── Header Action Button ── */
+.tab-action {
+  margin-left: auto; margin-bottom: -1px;
+  padding: .25rem .625rem; font-size: .75rem; border-radius: 5px;
+  border: 1px solid var(--color-border); background: var(--color-primary);
+  color: var(--color-surface); cursor: pointer; font-family: inherit;
+  white-space: nowrap; transition: background .15s;
+}
+.tab-action:hover { background: var(--color-primary-hover); }
+.tab-action.action-danger { background: var(--color-error); border-color: var(--color-error); }
+.tab-action.action-danger:hover { background: #dc2626; }
+.tab-action.action-copy { background: var(--color-surface); color: var(--color-text); }
+.tab-action.action-copy:hover { background: #f9fafb; }
+
+/* ── cURL Panel ── */
+.curl {
+  background: var(--color-text); color: #e5e7eb;
+  padding: .75rem; border-radius: 6px;
+  font-size: .75rem; font-family: var(--font-mono);
+  overflow-wrap: break-word; position: relative; white-space: pre-wrap;
+  flex: 1;
+}
+
+/* ── History Panel ── */
+.history-list { list-style: none; overflow-y: auto; max-height: 240px; }
+.history-item {
+  display: flex; align-items: flex-start; gap: .5rem;
+  padding: .375rem 0; border-bottom: 1px solid #f3f4f6;
+  font-size: .8rem; cursor: pointer;
+}
+.history-item:last-child { border-bottom: none; }
+.history-icon { flex-shrink: 0; font-size: .75rem; line-height: 1.5; }
+.history-icon-ok { color: var(--color-ok); }
+.history-icon-error { color: var(--color-error); }
+.history-summary { flex: 1; min-width: 0; }
+.history-msg { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-meta { color: var(--color-light-muted); font-size: .7rem; }
+.history-detail {
+  display: none; margin-top: .25rem; padding: .375rem .5rem;
+  background: #f9fafb; border-radius: 4px; font-size: .75rem;
+  white-space: pre-wrap; word-break: break-word;
+}
+.history-item.expanded .history-detail { display: block; }
+.history-hint { color: var(--color-light-muted); font-size: .8rem; padding: 1rem 0; text-align: center; }
+
+/* ── Buttons ── */
+.btn {
+  padding: .375rem .75rem; border-radius: 6px;
+  border: 1px solid var(--color-border); background: var(--color-surface);
+  font-size: .8rem; cursor: pointer; transition: all .15s; font-family: inherit;
+}
+.btn:hover { background: #f9fafb; border-color: var(--color-light-muted); }
+.btn-primary { background: var(--color-primary); color: var(--color-surface); border-color: var(--color-primary); }
+.btn-primary:hover { background: var(--color-primary-hover); }
+.btn-danger { background: var(--color-error); color: var(--color-surface); border-color: var(--color-error); }
+.btn-danger:hover { background: #dc2626; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: 1.5rem; right: 1.5rem;
+  padding: .75rem 1rem; border-radius: 8px; font-size: .8rem;
+  background: var(--color-text); color: var(--color-surface);
+  box-shadow: 0 4px 12px rgba(0,0,0,.15);
+  transform: translateY(100px); opacity: 0; transition: all .3s; z-index: 200;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast.toast-error { background: var(--color-error); }
+
+/* ── Responsive ── */
+@media (max-width: 640px) {
+  .tasks { padding: 1rem; }
+  header { padding: .75rem 1rem; }
+  .card { grid-template-columns: 1fr; }
+  .card-right { border-left: none; border-top: 1px solid #f3f4f6; }
+}
+</style>
+</head>
+<body>
+
+<!-- Auth Screen -->
+<div id="auth">
+  <div class="auth-box">
+    <h1>funtask Dashboard</h1>
+    <p>Enter your API token to continue</p>
+    <input type="password" id="tok" placeholder="Bearer token" autofocus>
+    <button id="tok-btn">Connect</button>
+    <div class="auth-error" id="auth-err"></div>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" hidden>
+  <header>
+    <h1 id="server-name">funtask</h1>
+    <div class="status-bar" id="status-bar"></div>
+  </header>
+  <div class="tasks" id="tasks"></div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+(function() {
+  'use strict';
+
+  /* ── Constants ── */
+  var TOKEN_KEY = 'funtask_token';
+
+  /* ── State ── */
+  var token = sessionStorage.getItem(TOKEN_KEY) || '';
+  var source = null;
+  var paramValues = {};
+  var lastData = null;
+
+  /* ── Utilities ── */
+  function $(id) { return document.getElementById(id); }
+
+  function esc(s) {
+    var d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML.replace(/'/g, '&#39;');
+  }
+
+  function relativeTime(iso) {
+    if (!iso) return '';
+    var d = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (d < 60) return 'just now';
+    if (d < 3600) return Math.floor(d / 60) + ' min ago';
+    if (d < 86400) return Math.floor(d / 3600) + 'h ago';
+    return Math.floor(d / 86400) + 'd ago';
+  }
+
+  function toast(msg, isError) {
+    var el = $('toast');
+    el.textContent = msg;
+    el.className = 'toast show' + (isError ? ' toast-error' : '');
+    setTimeout(function() { el.className = 'toast'; }, 3000);
+  }
+
+  /* ── API ── */
+  function api(path, opts) {
+    opts = opts || {};
+    var h = opts.headers || {};
+    if (token) h['Authorization'] = 'Bearer ' + token;
+    opts.headers = h;
+    return fetch(path, opts);
+  }
+
+  /* ── Auth ── */
+  function tryAuth() {
+    token = $('tok').value.trim();
+    if (!token) return;
+    $('auth-err').textContent = '';
+    api('/health').then(function(r) {
+      if (r.status === 401) {
+        $('auth-err').textContent = 'Invalid token';
+        token = '';
+        return;
+      }
+      sessionStorage.setItem(TOKEN_KEY, token);
+      $('auth').classList.add('hidden');
+      $('app').hidden = false;
+      r.json().then(start);
+    }).catch(function() {
+      $('auth-err').textContent = 'Cannot reach server';
+    });
+  }
+
+  function initAuth() {
+    if (!token) return;
+    api('/health').then(function(r) {
+      if (r.status === 401) {
+        token = '';
+        sessionStorage.removeItem(TOKEN_KEY);
+        return;
+      }
+      $('auth').classList.add('hidden');
+      $('app').hidden = false;
+      r.json().then(start);
+    }).catch(function() {});
+  }
+
+  /* ── Card HTML Builders ── */
+  function badgeHtml(task) {
+    if (task.status === 'running')
+      return '<span class="badge badge-running">running</span>';
+    if (task.lastJob && !task.lastJob.success)
+      return '<span class="badge badge-error">error</span>';
+    if (task.lastJob && task.lastJob.success)
+      return '<span class="badge badge-ok">idle</span>';
+    return '<span class="badge badge-idle">idle</span>';
+  }
+
+  function lastResultHtml(task) {
+    var results = task.results;
+    if (!results || !results.length) return '';
+    if (task.status === 'running') return '';
+    var r = results[0]; // newest first
+    if (r.success) {
+      if (!r.message) return '';
+      return '<div class="result-box result-box-ok">' +
+        '<div class="result-message">' + esc(r.message) + '</div>' +
+      '</div>';
+    }
+    var html = '<div class="result-box result-box-error">';
+    if (r.error && r.error.code) {
+      html += '<div class="result-code">' + esc(r.error.code) + '</div>';
+    }
+    html += '<div class="result-message">' + esc(r.message || 'Failed') + '</div>';
+    if (r.error && r.error.step) {
+      html += '<div class="result-message" style="margin-top:2px;opacity:.7">Step: ' + esc(r.error.step) + '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function progressHtml(task) {
+    if (task.status !== 'running' || !task.currentJob) return '';
+    var cj = task.currentJob;
+    if (cj.progress) {
+      return '<div class="prog">' +
+        '<div class="prog-bar"><div class="prog-fill" style="width:' + cj.progress.percent + '%"></div></div>' +
+        '<div class="prog-txt">' + cj.progress.current + '/' + cj.progress.total +
+        ' - ' + esc(cj.currentStep || '') + '</div></div>';
+    }
+    if (cj.currentStep) {
+      return '<div class="prog-txt" style="margin-bottom:.5rem">' + esc(cj.currentStep) + '</div>';
+    }
+    return '';
+  }
+
+  function metaHtml(task) {
+    if (task.status === 'running' && task.currentJob)
+      return 'Running for ' + task.currentJob.running;
+    if (task.lastJob) {
+      return (task.lastJob.success ? 'Completed ' : 'Failed ') +
+        relativeTime(task.lastJob.finished) + ' (took ' + task.lastJob.duration + ')';
+    }
+    return 'Never run';
+  }
+
+  function leftHtml(name, task) {
+    var desc = task.description
+      ? '<div class="task-desc">' + esc(task.description) + '</div>'
+      : '';
+    return '<div class="card-left">' +
+      '<div class="card-header">' +
+        '<span class="task-name">' + esc(name) + '</span>' +
+        badgeHtml(task) +
+      '</div>' +
+      desc +
+      lastResultHtml(task) +
+      progressHtml(task) +
+      '<div class="meta">' + metaHtml(task) + '</div>' +
+    '</div>';
+  }
+
+  function paramsTabHtml(name, task, isActive) {
+    var ex = task.example;
+    var saved = paramValues[name];
+    var val = saved || (ex ? JSON.stringify(ex, null, 2) : '{}');
+    var hint = ex
+      ? ''
+      : '<div class="params-hint">No parameters required</div>';
+    return '<div class="tab-panel' + (isActive ? ' active' : '') + '" data-panel="params">' +
+      '<textarea class="params-input" data-params="' + esc(name) + '"' +
+        ' placeholder=\'{"key": "value"}\'>' + esc(val) + '</textarea>' +
+      hint +
+    '</div>';
+  }
+
+  function historyTabHtml(name, task, isActive) {
+    var results = task.results;
+    if (!results || !results.length) {
+      return '<div class="tab-panel' + (isActive ? ' active' : '') + '" data-panel="history">' +
+        '<div class="history-hint">No results yet</div>' +
+      '</div>';
+    }
+    var items = '';
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var iconCls = r.success ? 'history-icon-ok' : 'history-icon-error';
+      var icon = r.success ? '&#10003;' : '&#10007;';
+      var msg = r.message || (r.success ? 'OK' : 'Failed');
+      var detail = '';
+      if (!r.success && r.error) {
+        detail = '<div class="history-detail">';
+        if (r.error.code) detail += '<strong>' + esc(r.error.code) + '</strong>\n';
+        if (r.error.message) detail += esc(r.error.message);
+        if (r.error.step) detail += '\nStep: ' + esc(r.error.step);
+        detail += '</div>';
+      } else if (r.success && r.message) {
+        detail = '<div class="history-detail">' + esc(r.message) + '</div>';
+      }
+      items += '<li class="history-item" data-action="toggle-detail">' +
+        '<span class="history-icon ' + iconCls + '">' + icon + '</span>' +
+        '<div class="history-summary">' +
+          '<div class="history-msg">' + esc(msg) + '</div>' +
+          '<div class="history-meta">' + relativeTime(r.finished) + ' - ' + esc(r.duration) + '</div>' +
+          detail +
+        '</div>' +
+      '</li>';
+    }
+    return '<div class="tab-panel' + (isActive ? ' active' : '') + '" data-panel="history">' +
+      '<ul class="history-list">' + items + '</ul>' +
+    '</div>';
+  }
+
+  function curlTabHtml(name, task, isActive) {
+    var ex = task.example;
+    var pd = ex ? JSON.stringify({params: ex}) : JSON.stringify({params: {}});
+    var curl = 'curl -X POST ' + location.origin + '/run/' + encodeURIComponent(name) +
+      ' \\\n  -H "Authorization: Bearer <TOKEN>"' +
+      ' \\\n  -H "Content-Type: application/json"' +
+      ' \\\n  -d \'' + pd + '\'';
+    return '<div class="tab-panel' + (isActive ? ' active' : '') + '" data-panel="curl">' +
+      '<div class="curl">' + esc(curl) + '</div>' +
+    '</div>';
+  }
+
+  function tabActionHtml(name, task, activeTab) {
+    if (activeTab === 'curl') {
+      return '<button class="tab-action action-copy" data-action="copy" data-task="' + esc(name) + '">Copy</button>';
+    }
+    if (task.status === 'running') {
+      return '<button class="tab-action action-danger" data-action="stop" data-task="' + esc(name) + '">Stop</button>';
+    }
+    return '<button class="tab-action" data-action="run" data-task="' + esc(name) + '">Run</button>';
+  }
+
+  function rightHtml(name, task, activeTab) {
+    activeTab = activeTab || 'params';
+    function tabCls(t) { return 'tab' + (activeTab === t ? ' active' : ''); }
+    return '<div class="card-right">' +
+      '<div class="tabs">' +
+        '<button class="' + tabCls('params') + '" data-action="tab" data-task="' + esc(name) + '" data-tab="params">Params</button>' +
+        '<button class="' + tabCls('history') + '" data-action="tab" data-task="' + esc(name) + '" data-tab="history">History</button>' +
+        '<button class="' + tabCls('curl') + '" data-action="tab" data-task="' + esc(name) + '" data-tab="curl">cURL</button>' +
+        '<span class="spacer"></span>' +
+        tabActionHtml(name, task, activeTab) +
+      '</div>' +
+      paramsTabHtml(name, task, activeTab === 'params') +
+      historyTabHtml(name, task, activeTab === 'history') +
+      curlTabHtml(name, task, activeTab === 'curl') +
+    '</div>';
+  }
+
+  function cardHtml(name, task, activeTab) {
+    var run = task.status === 'running';
+    var fail = !run && task.lastJob && !task.lastJob.success;
+    var ok = !run && task.lastJob && task.lastJob.success;
+    var cls = run ? ' card-running' : fail ? ' card-error' : ok ? ' card-ok' : '';
+    return '<div class="card' + cls + '" data-task="' + esc(name) + '">' +
+      leftHtml(name, task) +
+      rightHtml(name, task, activeTab) +
+    '</div>';
+  }
+
+  /* ── Rendering ── */
+  function render(data) {
+    saveAllParams();
+    lastData = data;
+
+    $('server-name').textContent = data.name || 'funtask';
+
+    var tasks = data.tasks || {};
+    var names = Object.keys(tasks).sort();
+    var okCount = 0, errorCount = 0, runningCount = 0;
+    names.forEach(function(n) {
+      var t = tasks[n];
+      if (t.status === 'running') runningCount++;
+      else if (t.lastJob && !t.lastJob.success) errorCount++;
+      else if (t.lastJob && t.lastJob.success) okCount++;
+    });
+
+    $('status-bar').innerHTML =
+      '<span><span class="dot dot-ok"></span>' + okCount + ' healthy</span>' +
+      (errorCount ? '<span><span class="dot dot-error"></span>' + errorCount + ' error</span>' : '') +
+      (runningCount ? '<span><span class="dot dot-running"></span>' + runningCount + ' running</span>' : '') +
+      '<span>uptime ' + (data.uptime || '-') + '</span>';
+
+    updateCards(names, tasks);
+  }
+
+  function updateCards(names, tasks) {
+    var container = $('tasks');
+    if (!names.length) {
+      container.innerHTML = '<div class="empty">No tasks registered</div>';
+      return;
+    }
+
+    // Index existing cards.
+    var existing = {};
+    container.querySelectorAll('.card[data-task]').forEach(function(el) {
+      existing[el.dataset.task] = el;
+    });
+
+    // Remove cards for tasks that no longer exist.
+    Object.keys(existing).forEach(function(n) {
+      if (names.indexOf(n) === -1) existing[n].remove();
+    });
+
+    var empty = container.querySelector('.empty');
+    if (empty) empty.remove();
+
+    names.forEach(function(n, i) {
+      var card = existing[n];
+      var activeTab = card ? getActiveTab(card) : 'params';
+      var html = cardHtml(n, tasks[n], activeTab);
+
+      if (!card) {
+        var wrap = document.createElement('div');
+        wrap.innerHTML = html;
+        var el = wrap.firstChild;
+        if (container.children[i]) container.insertBefore(el, container.children[i]);
+        else container.appendChild(el);
+        return;
+      }
+
+      // Check if the left side changed (skip right side to preserve textarea focus).
+      var newWrap = document.createElement('div');
+      newWrap.innerHTML = html;
+      var newCard = newWrap.firstChild;
+      var oldLeft = card.querySelector('.card-left');
+      var newLeft = newCard.querySelector('.card-left');
+
+      if (oldLeft && newLeft && oldLeft.innerHTML !== newLeft.innerHTML) {
+        oldLeft.innerHTML = newLeft.innerHTML;
+      }
+
+      // Update card border class.
+      card.className = newCard.className;
+
+      // Update the action button in the tabs header (Run/Stop/Copy).
+      var oldAction = card.querySelector('.tab-action');
+      var newAction = newCard.querySelector('.tab-action');
+      if (oldAction && newAction && oldAction.outerHTML !== newAction.outerHTML) {
+        oldAction.replaceWith(newAction);
+      }
+
+      // Update the history panel if it changed.
+      var oldHistory = card.querySelector('[data-panel="history"]');
+      var newHistory = newCard.querySelector('[data-panel="history"]');
+      if (oldHistory && newHistory && oldHistory.innerHTML !== newHistory.innerHTML) {
+        oldHistory.innerHTML = newHistory.innerHTML;
+      }
+    });
+  }
+
+  /* ── Tab Management ── */
+  function getActiveTab(card) {
+    var active = card.querySelector('.tab.active');
+    return active ? active.dataset.tab : 'params';
+  }
+
+  function switchTab(card, tabName) {
+    var name = card.dataset.task;
+    var task = lastData && lastData.tasks ? lastData.tasks[name] : null;
+    card.querySelectorAll('.tab').forEach(function(t) {
+      t.classList.toggle('active', t.dataset.tab === tabName);
+    });
+    card.querySelectorAll('.tab-panel').forEach(function(p) {
+      p.classList.toggle('active', p.dataset.panel === tabName);
+    });
+    // Swap the action button to match the active tab.
+    var oldAction = card.querySelector('.tab-action');
+    if (oldAction && task) {
+      var wrap = document.createElement('div');
+      wrap.innerHTML = tabActionHtml(name, task, tabName);
+      oldAction.replaceWith(wrap.firstChild);
+    }
+  }
+
+  /* ── Param Persistence ── */
+  function saveAllParams() {
+    document.querySelectorAll('textarea[data-params]').forEach(function(el) {
+      paramValues[el.dataset.params] = el.value;
+    });
+  }
+
+  /* ── Actions ── */
+  function runTask(name) {
+    saveAllParams();
+    var task = lastData && lastData.tasks ? lastData.tasks[name] : null;
+    var ex = task && task.example ? JSON.stringify(task.example) : null;
+    var body = (paramValues[name] || '').trim() || ex || '{}';
+    var parsed;
+    try {
+      parsed = JSON.parse(body);
+    } catch (e) {
+      toast('Invalid JSON in params', true);
+      return;
+    }
+    api('/run/' + encodeURIComponent(name), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({params: parsed})
+    }).then(function(r) {
+      if (r.ok || r.status === 202) {
+        toast('Task ' + name + ' started');
+      } else {
+        r.json().then(function(d) {
+          toast(d.error || 'Error: ' + r.status, true);
+        }).catch(function() {
+          toast('Error: ' + r.status, true);
+        });
+      }
+    }).catch(function() {
+      toast('Request failed', true);
+    });
+  }
+
+  function stopTask(name) {
+    api('/stop/' + encodeURIComponent(name), {method: 'POST'}).then(function(r) {
+      if (r.ok) {
+        toast('Stopping ' + name);
+      } else {
+        r.json().then(function(d) {
+          toast(d.error || 'Error: ' + r.status, true);
+        }).catch(function() {
+          toast('Error: ' + r.status, true);
+        });
+      }
+    }).catch(function() {
+      toast('Request failed', true);
+    });
+  }
+
+  function copyToClipboard(btn) {
+    var card = btn.closest('.card');
+    var curlEl = card ? card.querySelector('.curl') : null;
+    if (!curlEl) return;
+    navigator.clipboard.writeText(curlEl.textContent.trim()).then(function() {
+      btn.textContent = 'Copied!';
+      setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+    });
+  }
+
+  /* ── SSE Connection ── */
+  function connectSSE() {
+    if (source) source.close();
+    source = new EventSource('/events?token=' + encodeURIComponent(token));
+    source.onmessage = function(e) {
+      try { render(JSON.parse(e.data)); } catch (err) {}
+    };
+    source.onerror = function() {
+      if (source.readyState === 2) {
+        api('/health').then(function(r) {
+          if (r.status === 401) {
+            token = '';
+            sessionStorage.removeItem(TOKEN_KEY);
+            $('auth').classList.remove('hidden');
+            $('app').hidden = true;
+            $('auth-err').textContent = 'Session expired';
+          } else {
+            r.json().then(render);
+            setTimeout(connectSSE, 3000);
+          }
+        }).catch(function() {
+          toast('Connection lost - retrying...', true);
+          setTimeout(connectSSE, 5000);
+        });
+      }
+    };
+  }
+
+  function start(data) {
+    render(data);
+    connectSSE();
+  }
+
+  /* ── Click Handlers ── */
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    var action = btn.dataset.action;
+    var name = btn.dataset.task;
+    switch (action) {
+      case 'run':
+        runTask(name);
+        break;
+      case 'stop':
+        stopTask(name);
+        break;
+      case 'tab':
+        var card = btn.closest('.card');
+        if (card) switchTab(card, btn.dataset.tab);
+        break;
+      case 'copy':
+        copyToClipboard(btn);
+        break;
+      case 'toggle-detail':
+        var item = btn.closest('.history-item');
+        if (item) item.classList.toggle('expanded');
+        break;
+    }
+  });
+
+  $('tok').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') tryAuth();
+  });
+  $('tok-btn').addEventListener('click', tryAuth);
+
+  /* ── Boot ── */
+  initAuth();
+})();
+</script>
+</body>
+</html>

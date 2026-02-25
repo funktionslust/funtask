@@ -3,7 +3,6 @@ package funtask
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +18,7 @@ var dummyTask TaskFunc = func(ctx *Run, params Params) Result {
 
 func validServer() *Server {
 	return New("test-server",
-		WithTask("task1", dummyTask),
+		Task("task1", dummyTask),
 		WithAuthToken("secret"),
 		WithDeadLetterDir("/tmp/dead-letters"),
 	)
@@ -46,8 +45,8 @@ func TestNew_EmptyName(t *testing.T) {
 	}
 }
 
-func TestNew_WithTask(t *testing.T) {
-	f := New("n", WithTask("sync", dummyTask))
+func TestNew_Task(t *testing.T) {
+	f := New("n", Task("sync", dummyTask))
 	if _, ok := f.tasks["sync"]; !ok {
 		t.Error("task 'sync' not registered")
 	}
@@ -55,9 +54,9 @@ func TestNew_WithTask(t *testing.T) {
 
 func TestNew_MultipleTasks(t *testing.T) {
 	f := New("n",
-		WithTask("a", dummyTask),
-		WithTask("b", dummyTask),
-		WithTask("c", dummyTask),
+		Task("a", dummyTask),
+		Task("b", dummyTask),
+		Task("c", dummyTask),
 	)
 	if len(f.tasks) != 3 {
 		t.Errorf("tasks count = %d, want 3", len(f.tasks))
@@ -157,7 +156,7 @@ func TestListenAndServe_NoAuthToken(t *testing.T) {
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
 
 	f := New("n",
-		WithTask("t", dummyTask),
+		Task("t", dummyTask),
 		WithDeadLetterDir("/tmp/dl"),
 	)
 	err := f.ListenAndServe(":0")
@@ -180,7 +179,7 @@ func TestListenAndServe_NoDeadLetterDir(t *testing.T) {
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
 
 	f := New("n",
-		WithTask("t", dummyTask),
+		Task("t", dummyTask),
 		WithAuthToken("secret"),
 	)
 	err := f.ListenAndServe(":0")
@@ -229,8 +228,8 @@ func TestListenAndServe_ValidConfig(t *testing.T) {
 	}
 }
 
-func TestWithTask(t *testing.T) {
-	f := New("n", WithTask("process", dummyTask))
+func TestTask(t *testing.T) {
+	f := New("n", Task("process", dummyTask))
 	fn, ok := f.tasks["process"]
 	if !ok {
 		t.Fatal("task 'process' not found")
@@ -240,10 +239,10 @@ func TestWithTask(t *testing.T) {
 	}
 }
 
-func TestWithTask_OverwritesExisting(t *testing.T) {
+func TestTask_OverwritesExisting(t *testing.T) {
 	first := TaskFunc(func(ctx *Run, params Params) Result { return OK("first") })
 	second := TaskFunc(func(ctx *Run, params Params) Result { return OK("second") })
-	f := New("n", WithTask("sync", first), WithTask("sync", second))
+	f := New("n", Task("sync", first), Task("sync", second))
 	if len(f.tasks) != 1 {
 		t.Errorf("tasks count = %d, want 1 (overwrite)", len(f.tasks))
 	}
@@ -337,7 +336,7 @@ func TestOptionFunctions_NoValidation(t *testing.T) {
 	// All With* functions should accept any value without panicking
 	// including zero values, negative values, empty strings, nil
 	f := New("n",
-		WithTask("", dummyTask),
+		Task("", dummyTask),
 		WithAuthToken(""),
 		WithDeadLetterDir(""),
 		WithMaxDuration(0),
@@ -387,7 +386,7 @@ func TestValidate_CustomHandlerEmptyPattern(t *testing.T) {
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
 	f := New("n",
-		WithTask("t", dummyTask),
+		Task("t", dummyTask),
 		WithAuthToken("secret"),
 		WithDeadLetterDir("/tmp/dl"),
 		WithHandler("", h),
@@ -405,7 +404,7 @@ func TestValidate_CustomHandlerNilHandler(t *testing.T) {
 	t.Setenv("FUNTASK_AUTH_TOKEN", "")
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
 	f := New("n",
-		WithTask("t", dummyTask),
+		Task("t", dummyTask),
 		WithAuthToken("secret"),
 		WithDeadLetterDir("/tmp/dl"),
 		WithHandler("GET /custom", nil),
@@ -440,7 +439,7 @@ func TestValidate_CustomHandlerReservedRoute(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := New("n",
-				WithTask("t", dummyTask),
+				Task("t", dummyTask),
 				WithAuthToken("secret"),
 				WithDeadLetterDir("/tmp/dl"),
 				WithHandler(tt.pattern, h),
@@ -477,7 +476,7 @@ func TestValidate_CustomHandlerValidPatterns(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := New("n",
-				WithTask("t", dummyTask),
+				Task("t", dummyTask),
 				WithAuthToken("secret"),
 				WithDeadLetterDir("/tmp/dl"),
 				WithHandler(tt.pattern, h),
@@ -490,25 +489,12 @@ func TestValidate_CustomHandlerValidPatterns(t *testing.T) {
 }
 
 func TestWithHandler_ServesRequests(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("echo", dummyTask),
 		WithHandler("GET /custom", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]string{"source": "custom"})
 		})),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"echo": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.startedAt = time.Now()
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
@@ -531,25 +517,12 @@ func TestWithHandler_ServesRequests(t *testing.T) {
 }
 
 func TestWithHandler_NoAuthRequired(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("echo", dummyTask),
 		WithHandler("GET /public", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]string{"access": "public"})
 		})),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"echo": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.startedAt = time.Now()
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
@@ -614,32 +587,14 @@ func TestCancelAllJobs(t *testing.T) {
 		}
 	})
 
-	f := New("test-server",
-		WithTask("slow", slowTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"slow": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("slow", slowTask))
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
 	// Start task in background.
 	done := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/slow", strings.NewReader(`{"jobId":"cancel-all-1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		_, _ = postRun(srv, "slow", `{"jobId":"cancel-all-1"}`)
 		close(done)
 	}()
 	<-started
@@ -687,44 +642,21 @@ func TestCancelAllJobs_MultipleTasks(t *testing.T) {
 		}
 	})
 
-	f := New("test-server",
-		WithTask("a", taskA),
-		WithTask("b", taskB),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"a": {}, "b": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("a", taskA), Task("b", taskB))
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
 	// Start both tasks in background.
 	doneA := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/a", strings.NewReader(`{"jobId":"multi-a"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "a", `{"jobId":"multi-a"}`)
+		closeBody(r)
 		close(doneA)
 	}()
 	doneB := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/b", strings.NewReader(`{"jobId":"multi-b"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "b", `{"jobId":"multi-b"}`)
+		closeBody(r)
 		close(doneB)
 	}()
 	<-startedA
@@ -766,20 +698,7 @@ func TestShutdown_SetsDrainingAndCancels(t *testing.T) {
 		}
 	})
 
-	f := New("test-server",
-		WithTask("slow", slowTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithShutdownTimeout(5*time.Second),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"slow": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("slow", slowTask), WithShutdownTimeout(5*time.Second))
 	// Set f.server to a dummy — Shutdown on a never-started server is a safe no-op.
 	f.server = &http.Server{}
 	srv := httptest.NewServer(f.routes())
@@ -788,13 +707,8 @@ func TestShutdown_SetsDrainingAndCancels(t *testing.T) {
 	// Start task in background.
 	done := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/slow", strings.NewReader(`{"jobId":"shutdown-1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "slow", `{"jobId":"shutdown-1"}`)
+		closeBody(r)
 		close(done)
 	}()
 	<-started
@@ -824,7 +738,7 @@ func TestListenAndServe_GracefulShutdown(t *testing.T) {
 	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
 
 	f := New("shutdown-server",
-		WithTask("echo", dummyTask),
+		Task("echo", dummyTask),
 		WithAuthToken("test-secret"),
 		WithDeadLetterDir("/tmp/test-dl"),
 		WithShutdownTimeout(5*time.Second),
@@ -891,7 +805,7 @@ func TestListenAndServe_GracefulShutdown_CancelsJobs(t *testing.T) {
 	})
 
 	f := New("shutdown-server",
-		WithTask("slow", slowTask),
+		Task("slow", slowTask),
 		WithAuthToken("test-secret"),
 		WithDeadLetterDir("/tmp/test-dl"),
 		WithShutdownTimeout(5*time.Second),
@@ -978,20 +892,7 @@ func TestShutdown_WaitsForJobs(t *testing.T) {
 		}
 	})
 
-	f := New("test-server",
-		WithTask("fast", taskFunc),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithShutdownTimeout(5*time.Second),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"fast": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("fast", taskFunc), WithShutdownTimeout(5*time.Second))
 	f.server = &http.Server{}
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
@@ -999,13 +900,8 @@ func TestShutdown_WaitsForJobs(t *testing.T) {
 	// Start task.
 	done := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/fast", strings.NewReader(`{"jobId":"wait-1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "fast", `{"jobId":"wait-1"}`)
+		closeBody(r)
 		close(done)
 	}()
 	<-started
@@ -1037,19 +933,7 @@ func TestShutdown_WorkerShutdownForStuckJob(t *testing.T) {
 		return OK("should not reach here")
 	})
 
-	f := New("test-server",
-		WithTask("stuck", stuckTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithShutdownTimeout(200*time.Millisecond),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"stuck": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("stuck", stuckTask), WithShutdownTimeout(200*time.Millisecond))
 
 	// Capture dead letter writes.
 	var writtenJobID string
@@ -1065,13 +949,8 @@ func TestShutdown_WorkerShutdownForStuckJob(t *testing.T) {
 
 	// Start stuck task.
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/stuck", strings.NewReader(`{"jobId":"stuck-1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "stuck", `{"jobId":"stuck-1"}`)
+		closeBody(r)
 	}()
 	<-started
 
@@ -1117,20 +996,11 @@ func TestShutdown_WorkerShutdownWithCallback(t *testing.T) {
 		return OK("should not reach here")
 	})
 
-	f := New("test-server",
-		WithTask("stuck", stuckTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("stuck", stuckTask),
 		WithShutdownTimeout(200*time.Millisecond),
 		WithCallbackAllowlist("https://hooks.example.com"),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"stuck": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 
 	// Capture callback POST.
 	var callbackData []byte
@@ -1146,14 +1016,8 @@ func TestShutdown_WorkerShutdownWithCallback(t *testing.T) {
 
 	// Start stuck async task with callback.
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/stuck",
-			strings.NewReader(`{"jobId":"stuck-cb-1","callbackUrl":"https://hooks.example.com/webhook/123"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "stuck", `{"jobId":"stuck-cb-1","callbackUrl":"https://hooks.example.com/webhook/123"}`)
+		closeBody(r)
 	}()
 	<-started
 
@@ -1180,26 +1044,12 @@ func TestShutdown_WorkerShutdownWithCallback(t *testing.T) {
 }
 
 func TestShutdown_TaskDoneSkipsWorkerShutdown(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-
-	f := New("test-server",
-		WithTask("task1", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"task1": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
+	f := testServerWith(t, Task("task1", dummyTask))
 	var writeCalled bool
 	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error {
 		writeCalled = true
 		return nil
 	}
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 
 	// Simulate a slot where task function returned (taskDone=true) but goroutine is in delivery.
 	slot := f.slots["task1"]
@@ -1218,25 +1068,7 @@ func TestShutdown_TaskDoneSkipsWorkerShutdown(t *testing.T) {
 }
 
 func TestHandleStuckJobs_MultipleSlots(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-
-	f := New("test-server",
-		WithTask("stuck", dummyTask),
-		WithTask("idle", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{
-		"stuck": {},
-		"idle":  {},
-	}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
+	f := testServerWith(t, Task("stuck", dummyTask), Task("idle", dummyTask))
 
 	// Track writes.
 	var writtenPaths []string
@@ -1277,19 +1109,10 @@ func TestAsyncDelivery_DrainingUsesSingleAttempt(t *testing.T) {
 		return OK("done")
 	})
 
-	f := New("test-server",
-		WithTask("async", blockingTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("async", blockingTask),
 		WithCallbackAllowlist("https://hooks.example.com"),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"async": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 
 	// Count POST calls.
 	var postCalls int
@@ -1304,14 +1127,8 @@ func TestAsyncDelivery_DrainingUsesSingleAttempt(t *testing.T) {
 
 	// Start async job.
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/async",
-			strings.NewReader(`{"jobId":"drain-1","callbackUrl":"https://hooks.example.com/webhook/1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "async", `{"jobId":"drain-1","callbackUrl":"https://hooks.example.com/webhook/1"}`)
+		closeBody(r)
 	}()
 	<-started
 
@@ -1346,20 +1163,11 @@ func TestShutdown_SyncTimeoutStuckJob(t *testing.T) {
 		return OK("should not reach here")
 	})
 
-	f := New("test-server",
-		WithTask("stuck", stuckTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("stuck", stuckTask),
 		WithSyncTimeout(100*time.Millisecond),
 		WithShutdownTimeout(300*time.Millisecond),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"stuck": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.postFunc = func(url string, data []byte) (int, error) { return 200, nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 
 	// Capture dead letter writes.
 	var writtenJobID string
@@ -1376,14 +1184,8 @@ func TestShutdown_SyncTimeoutStuckJob(t *testing.T) {
 	// Send sync request (no callbackUrl) — will hit sync timeout.
 	syncDone := make(chan struct{})
 	go func() {
-		req, _ := http.NewRequest("POST", srv.URL+"/run/stuck",
-			strings.NewReader(`{"jobId":"sync-stuck-1"}`))
-		req.Header.Set("Authorization", "Bearer test-secret")
-		req.Header.Set("Content-Type", "application/json")
-		resp, _ := http.DefaultClient.Do(req)
-		if resp != nil {
-			_ = resp.Body.Close()
-		}
+		r, _ := postRun(srv, "stuck", `{"jobId":"sync-stuck-1"}`)
+		closeBody(r)
 		close(syncDone)
 	}()
 	<-started
@@ -1415,18 +1217,7 @@ func TestShutdown_SyncTimeoutStuckJob(t *testing.T) {
 }
 
 func TestHandleStuckJobs_DeadLetterWriteFailure(t *testing.T) {
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-
-	f := New("test-server",
-		WithTask("stuck", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"stuck": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
+	f := testServerWith(t, Task("stuck", dummyTask))
 
 	// Dead letter write fails.
 	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error {
@@ -1437,8 +1228,6 @@ func TestHandleStuckJobs_DeadLetterWriteFailure(t *testing.T) {
 		postCalled = true
 		return 200, nil
 	}
-	f.deliverer.removeFunc = func(name string) error { return nil }
-	f.deliverer.sleepFunc = func(time.Duration) {}
 
 	// Set up stuck slot with callback.
 	slot := f.slots["stuck"]
@@ -1453,5 +1242,96 @@ func TestHandleStuckJobs_DeadLetterWriteFailure(t *testing.T) {
 	// Verify: callback was NOT called because dead letter write failed.
 	if postCalled {
 		t.Error("postFunc should not be called when dead letter write fails")
+	}
+}
+
+func TestTask_WithDescription(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n",
+		Task("sync", dummyTask).Description("Syncs everything"),
+	)
+	if f.taskDescriptions["sync"] != "Syncs everything" {
+		t.Errorf("description = %q, want %q", f.taskDescriptions["sync"], "Syncs everything")
+	}
+}
+
+func TestTask_WithExample(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	ex := map[string]any{"count": 10}
+	f := New("n",
+		Task("sync", dummyTask).Example(ex),
+	)
+	got := f.taskExamples["sync"]
+	if got == nil {
+		t.Fatal("example is nil")
+	}
+	if got["count"] != 10 {
+		t.Errorf("example[count] = %v, want 10", got["count"])
+	}
+}
+
+func TestTask_FullChain(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n",
+		Task("sync", dummyTask).
+			Description("Full chain task").
+			Example(map[string]any{"key": "value"}),
+		WithAuthToken("tok"),
+	)
+	if _, ok := f.tasks["sync"]; !ok {
+		t.Error("task 'sync' not registered")
+	}
+	if f.taskDescriptions["sync"] != "Full chain task" {
+		t.Errorf("description = %q, want %q", f.taskDescriptions["sync"], "Full chain task")
+	}
+	if f.taskExamples["sync"] == nil {
+		t.Fatal("example is nil")
+	}
+	if f.authToken != "tok" {
+		t.Errorf("authToken = %q, want %q", f.authToken, "tok")
+	}
+}
+
+func TestTask_NoMetadata(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n", Task("sync", dummyTask))
+	if _, ok := f.taskDescriptions["sync"]; ok {
+		t.Error("description should not be set when not provided")
+	}
+	if _, ok := f.taskExamples["sync"]; ok {
+		t.Error("example should not be set when not provided")
+	}
+}
+
+func TestTask_OverwriteClearsMetadata(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n",
+		Task("sync", dummyTask).Description("first").Example(map[string]any{"a": 1}),
+		Task("sync", dummyTask), // second without metadata
+	)
+	if _, ok := f.taskDescriptions["sync"]; ok {
+		t.Error("description should be cleared by second Task without Description")
+	}
+	if _, ok := f.taskExamples["sync"]; ok {
+		t.Error("example should be cleared by second Task without Example")
+	}
+}
+
+func TestTask_WithKeepResults(t *testing.T) {
+	t.Setenv("FUNTASK_AUTH_TOKEN", "")
+	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
+	f := New("n",
+		Task("sync", dummyTask).KeepResults(5),
+	)
+	if f.taskResultSizes == nil {
+		t.Fatal("taskResultSizes is nil")
+	}
+	if f.taskResultSizes["sync"] != 5 {
+		t.Errorf("taskResultSizes[sync] = %d, want 5", f.taskResultSizes["sync"])
 	}
 }

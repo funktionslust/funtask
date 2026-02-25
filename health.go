@@ -13,9 +13,12 @@ type healthResponse struct {
 }
 
 type healthTaskState struct {
-	Status     string         `json:"status"`
-	CurrentJob *healthRunning `json:"currentJob,omitempty"`
-	LastJob    *healthLastJob `json:"lastJob,omitempty"`
+	Status      string         `json:"status"`
+	Description string         `json:"description,omitempty"`
+	Example     map[string]any `json:"example,omitempty"`
+	CurrentJob  *healthRunning `json:"currentJob,omitempty"`
+	LastJob     *healthLastJob `json:"lastJob,omitempty"`
+	Results     []healthResult `json:"results,omitempty"`
 }
 
 type healthRunning struct {
@@ -39,6 +42,15 @@ type healthLastJob struct {
 	Duration string `json:"duration"`
 }
 
+type healthResult struct {
+	JobID    string    `json:"jobId"`
+	Success  bool      `json:"success"`
+	Message  string    `json:"message,omitempty"`
+	Duration string    `json:"duration"`
+	Finished string    `json:"finished"`
+	Error    *jobError `json:"error,omitempty"`
+}
+
 func (f *Server) handleLivez(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -58,6 +70,12 @@ func (f *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, f.buildHealthResponse())
+}
+
+// buildHealthResponse assembles a point-in-time health snapshot.
+// Used by both GET /health and the SSE event stream.
+func (f *Server) buildHealthResponse() healthResponse {
 	status := "ok"
 	if f.draining.Load() {
 		status = "draining"
@@ -83,6 +101,7 @@ func (f *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		lastDuration := slot.lastDuration
 		slot.mu.Unlock()
 
+		var ts healthTaskState
 		if running {
 			cj := &healthRunning{
 				JobID:   slotJobID,
@@ -105,25 +124,35 @@ func (f *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			resp.Tasks[name] = healthTaskState{
+			ts = healthTaskState{
 				Status:     "running",
 				CurrentJob: cj,
 			}
-			continue
-		}
-
-		// Idle task.
-		ts := healthTaskState{Status: "idle"}
-		if lastJobID != "" {
-			ts.LastJob = &healthLastJob{
-				JobID:    lastJobID,
-				Success:  lastSuccess,
-				Finished: lastCompletedAt.Format(time.RFC3339),
-				Duration: lastDuration,
+		} else {
+			ts = healthTaskState{Status: "idle"}
+			if lastJobID != "" {
+				ts.LastJob = &healthLastJob{
+					JobID:    lastJobID,
+					Success:  lastSuccess,
+					Finished: lastCompletedAt.Format(time.RFC3339),
+					Duration: lastDuration,
+				}
 			}
 		}
+
+		if desc := f.taskDescriptions[name]; desc != "" {
+			ts.Description = desc
+		}
+		if ex := f.taskExamples[name]; ex != nil {
+			cp := make(map[string]any, len(ex))
+			for k, v := range ex {
+				cp[k] = v
+			}
+			ts.Example = cp
+		}
+		ts.Results = f.history.healthResults(name)
 		resp.Tasks[name] = ts
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	return resp
 }

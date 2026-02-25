@@ -2,10 +2,9 @@ package funtask
 
 import (
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -382,26 +381,14 @@ func TestHealthHandler_IdleWithLastJob_Async(t *testing.T) {
 	echoTask := TaskFunc(func(ctx *Run, params Params) Result {
 		return OK("async done")
 	})
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", echoTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
+	f := testServerWith(t,
+		Task("echo", echoTask),
 		WithCallbackAllowlist("https://hooks.example.com"),
 	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"echo": {}}
-	f.startedAt = time.Now()
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
-	f.deliverer.writeFunc = func(name string, data []byte, perm os.FileMode) error { return nil }
-	f.deliverer.removeFunc = func(name string) error { return nil }
 	f.deliverer.postFunc = func(url string, data []byte) (int, error) {
 		defer close(done)
 		return 200, nil
 	}
-	f.deliverer.sleepFunc = func(time.Duration) {}
 	srv := httptest.NewServer(f.routes())
 	defer srv.Close()
 
@@ -537,23 +524,9 @@ func TestHealthHandler_Draining(t *testing.T) {
 	}
 }
 
-// testServerWithReadiness creates a test server with a custom readiness check.
-// Unlike testServer, this uses New() to wire up WithReadiness properly.
 func testServerWithReadiness(t *testing.T, fn func() error) *Server {
 	t.Helper()
-	t.Setenv("FUNTASK_AUTH_TOKEN", "")
-	t.Setenv("FUNTASK_DEAD_LETTER_DIR", "")
-	f := New("test-server",
-		WithTask("echo", dummyTask),
-		WithAuthToken("test-secret"),
-		WithDeadLetterDir("/tmp/test-dl"),
-		WithReadiness(fn),
-	)
-	f.logger = slog.With("server", f.name)
-	f.slots = map[string]*taskSlot{"echo": {}}
-	f.cache = &resultCache{entries: make(map[string]*resultCacheEntry)}
-	f.startedAt = time.Now()
-	return f
+	return testServerWith(t, Task("echo", dummyTask), WithReadiness(fn))
 }
 
 func TestReadyz_DrainingReturns503(t *testing.T) {
@@ -624,5 +597,286 @@ func TestReadyz_NotDraining_CustomCheckPasses(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if body["status"] != "ok" {
 		t.Errorf("status = %q, want %q", body["status"], "ok")
+	}
+}
+
+func TestHealthHandler_TaskDescription(t *testing.T) {
+	f := testServerWith(t, Task("echo", dummyTask).Description("Echoes back params"))
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var body healthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	task := body.Tasks["echo"]
+	if task.Description != "Echoes back params" {
+		t.Errorf("description = %q, want %q", task.Description, "Echoes back params")
+	}
+}
+
+func TestHealthHandler_TaskExample(t *testing.T) {
+	f := testServerWith(t, Task("echo", dummyTask).Example(map[string]any{"count": 10}))
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var body healthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	task := body.Tasks["echo"]
+	if task.Example == nil {
+		t.Fatal("example is nil")
+	}
+	// JSON numbers decode as float64.
+	if task.Example["count"] != float64(10) {
+		t.Errorf("example[count] = %v, want 10", task.Example["count"])
+	}
+}
+
+func TestHealthHandler_RunningTaskWithMetadata(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	slowTask := TaskFunc(func(ctx *Run, params Params) Result {
+		close(started)
+		<-release
+		return OK("done")
+	})
+	f := testServerWith(t,
+		Task("slow", slowTask).
+			Description("A slow task").
+			Example(map[string]any{"delay": 5}),
+	)
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	done := make(chan struct{})
+	go func() {
+		_, _ = postRun(srv, "slow", `{"jobId":"meta-run-1"}`)
+		close(done)
+	}()
+	<-started
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var body healthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	task := body.Tasks["slow"]
+	if task.Status != "running" {
+		t.Errorf("status = %q, want %q", task.Status, "running")
+	}
+	if task.Description != "A slow task" {
+		t.Errorf("description = %q, want %q", task.Description, "A slow task")
+	}
+	if task.Example == nil {
+		t.Fatal("example is nil, want non-nil for running task with metadata")
+	}
+	if task.Example["delay"] != float64(5) {
+		t.Errorf("example[delay] = %v, want 5", task.Example["delay"])
+	}
+
+	close(release)
+	<-done
+}
+
+func TestHealthHandler_ResultsInResponse(t *testing.T) {
+	successTask := TaskFunc(func(_ *Run, _ Params) Result {
+		return OK("it worked")
+	})
+	failTask := TaskFunc(func(_ *Run, _ Params) Result {
+		return Fail("bad_input", "missing field")
+	})
+
+	f := testServer(t)
+	f.tasks = map[string]TaskFunc{"task": successTask}
+	f.slots = map[string]*taskSlot{"task": {}}
+	f.history = newResultHistory(f.slots, f.resultHistorySize, f.taskResultSizes)
+	f.startedAt = time.Now()
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	// Run success.
+	r1, _ := postRun(srv, "task", `{"jobId":"j1"}`)
+	closeBody(r1)
+
+	// Swap to fail task and run again.
+	f.tasks["task"] = failTask
+	r2, _ := postRun(srv, "task", `{"jobId":"j2"}`)
+	closeBody(r2)
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var body healthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	task := body.Tasks["task"]
+	if len(task.Results) != 2 {
+		t.Fatalf("results length = %d, want 2", len(task.Results))
+	}
+
+	// Newest first.
+	newest := task.Results[0]
+	if newest.JobID != "j2" {
+		t.Errorf("results[0].jobId = %q, want %q", newest.JobID, "j2")
+	}
+	if newest.Success {
+		t.Error("results[0].success = true, want false")
+	}
+	if newest.Error == nil {
+		t.Fatal("results[0].error is nil, want non-nil")
+	}
+	if newest.Error.Code != "bad_input" {
+		t.Errorf("results[0].error.code = %q, want %q", newest.Error.Code, "bad_input")
+	}
+	if newest.Message != "missing field" {
+		t.Errorf("results[0].message = %q, want %q", newest.Message, "missing field")
+	}
+
+	oldest := task.Results[1]
+	if oldest.JobID != "j1" {
+		t.Errorf("results[1].jobId = %q, want %q", oldest.JobID, "j1")
+	}
+	if !oldest.Success {
+		t.Error("results[1].success = false, want true")
+	}
+	if oldest.Message != "it worked" {
+		t.Errorf("results[1].message = %q, want %q", oldest.Message, "it worked")
+	}
+	if oldest.Error != nil {
+		t.Errorf("results[1].error = %+v, want nil", oldest.Error)
+	}
+	if oldest.Finished == "" {
+		t.Error("results[1].finished is empty, want RFC3339 timestamp")
+	}
+}
+
+func TestHealthHandler_ResultsOmittedWhenEmpty(t *testing.T) {
+	f := testServer(t)
+	f.startedAt = time.Now()
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var raw map[string]json.RawMessage
+	_ = json.NewDecoder(resp.Body).Decode(&raw)
+
+	var tasks map[string]json.RawMessage
+	_ = json.Unmarshal(raw["tasks"], &tasks)
+
+	var taskMap map[string]json.RawMessage
+	_ = json.Unmarshal(tasks["echo"], &taskMap)
+
+	if _, ok := taskMap["results"]; ok {
+		t.Error("results field should be omitted when no results exist")
+	}
+}
+
+func TestHealthHandler_ResultsWhileRunning(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls int32
+	task := TaskFunc(func(ctx *Run, _ Params) Result {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			return OK("first done")
+		}
+		close(started)
+		<-release
+		return OK("second done")
+	})
+
+	f := testServer(t)
+	f.tasks = map[string]TaskFunc{"task": task}
+	f.slots = map[string]*taskSlot{"task": {}}
+	f.history = newResultHistory(f.slots, f.resultHistorySize, f.taskResultSizes)
+	f.startedAt = time.Now()
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	// Complete one run first (instant).
+	r1, _ := postRun(srv, "task", `{"jobId":"j1"}`)
+	closeBody(r1)
+
+	// Start a second run that blocks.
+	go func() {
+		r2, _ := postRun(srv, "task", `{"jobId":"j2"}`)
+		closeBody(r2)
+	}()
+	<-started
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	var body healthResponse
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+
+	tk := body.Tasks["task"]
+	if tk.Status != "running" {
+		t.Errorf("status = %q, want %q", tk.Status, "running")
+	}
+	if tk.CurrentJob == nil {
+		t.Error("currentJob is nil, want non-nil")
+	}
+	if len(tk.Results) != 1 {
+		t.Errorf("results length = %d, want 1 (from prior completed run)", len(tk.Results))
+	}
+
+	close(release)
+}
+
+func TestHealthHandler_TaskNoMetadata_OmitsFields(t *testing.T) {
+	f := testServer(t)
+	f.startedAt = time.Now()
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := getHealth(srv)
+	if err != nil {
+		t.Fatalf("GET /health: %v", err)
+	}
+	defer closeBody(resp)
+
+	// Decode as raw JSON to verify omitempty.
+	var raw map[string]json.RawMessage
+	_ = json.NewDecoder(resp.Body).Decode(&raw)
+
+	var tasks map[string]json.RawMessage
+	_ = json.Unmarshal(raw["tasks"], &tasks)
+
+	var taskMap map[string]json.RawMessage
+	_ = json.Unmarshal(tasks["echo"], &taskMap)
+
+	if _, ok := taskMap["description"]; ok {
+		t.Error("description field should be omitted when not set")
+	}
+	if _, ok := taskMap["example"]; ok {
+		t.Error("example field should be omitted when not set")
 	}
 }

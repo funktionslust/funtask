@@ -13,14 +13,15 @@ import (
 type Run struct {
 	context.Context
 
-	mu      sync.RWMutex // guards step, stepAt, current, total, percent
-	step    string
-	stepAt  time.Time
-	current int
-	total   int
-	percent float64
-	steps   []string             // records all Step/Progress messages for test assertions
-	logf    func(string, ...any) // optional log function, set by TestRun
+	mu       sync.RWMutex // guards step, stepAt, current, total, percent
+	step     string
+	stepAt   time.Time
+	current  int
+	total    int
+	percent  float64
+	steps    []string             // records all Step/Progress messages for test assertions
+	logf     func(string, ...any) // optional log function, set by TestRun
+	onChange func()               // called after Step/Progress; nil = no-op
 }
 
 // Step reports what the task is currently doing. The step description is
@@ -35,6 +36,9 @@ func (r *Run) Step(msg string, args ...any) {
 	r.mu.Unlock()
 	if r.logf != nil {
 		r.logf("step: %s", s)
+	}
+	if r.onChange != nil {
+		r.onChange()
 	}
 }
 
@@ -90,5 +94,8 @@ func (r *Run) Progress(current, total int, msg string, args ...any) {
 	r.mu.Unlock()
 	if r.logf != nil {
 		r.logf("step: %s", s)
+	}
+	if r.onChange != nil {
+		r.onChange()
 	}
 }
