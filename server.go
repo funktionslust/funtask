@@ -25,6 +25,7 @@ type errorResponse struct {
 type runRequest struct {
 	JobID       string         `json:"jobId"`
 	CallbackURL string         `json:"callbackUrl"`
+	Async       bool           `json:"async"`
 	Params      map[string]any `json:"params"`
 }
 
@@ -363,7 +364,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	// --- Async path ---
 
-	if req.CallbackURL != "" {
+	if req.CallbackURL != "" || req.Async {
 		var jobCtx context.Context
 		var jobCancel context.CancelFunc
 		if f.maxDuration > 0 {
@@ -413,39 +414,41 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 
 			duration := time.Since(startedAt).Round(time.Millisecond).String()
 			resp := buildJobResponse(jobID, result, duration)
-			data, resp := marshalResult(resp)
 
-			// Enforce result size limit before delivery.
-			if len(data) > maxResultSize {
-				resp = jobResponse{
-					JobID:    resp.JobID,
-					Success:  false,
-					Duration: resp.Duration,
-					Error: &jobError{
-						Code:    "result_too_large",
-						Message: fmt.Sprintf("result exceeds maximum size (%d MB)", maxResultSize>>20),
-					},
-				}
-				data, resp = marshalResult(resp)
-			}
+			if callbackURL != "" {
+				data, cbResp := marshalResult(resp)
 
-			// Write dead letter BEFORE callback attempt — ensures recoverability if delivery fails.
-			if err := f.deliverer.writeDeadLetter(jobID, data); err != nil {
-				log.Error("dead letter write failed", "error", err)
-				// Do NOT attempt callback — result safety net is missing.
-			} else if f.draining.Load() {
-				// Single attempt during shutdown — full retry schedule exceeds shutdown timeout.
-				if err := f.deliverer.deliverOnce(jobID, callbackURL, data); err != nil {
-					log.Warn("shutdown callback delivery failed", "error", err)
+				// Enforce result size limit before delivery.
+				if len(data) > maxResultSize {
+					cbResp = jobResponse{
+						JobID:    cbResp.JobID,
+						Success:  false,
+						Duration: cbResp.Duration,
+						Error: &jobError{
+							Code:    "result_too_large",
+							Message: fmt.Sprintf("result exceeds maximum size (%d MB)", maxResultSize>>20),
+						},
+					}
+					data, cbResp = marshalResult(cbResp)
 				}
-			} else {
-				if err := f.deliverer.deliver(jobID, callbackURL, data); err != nil {
-					log.Warn("async callback delivery failed", "error", err)
+
+				// Write dead letter BEFORE callback attempt.
+				if err := f.deliverer.writeDeadLetter(jobID, data); err != nil {
+					log.Error("dead letter write failed", "error", err)
+				} else if f.draining.Load() {
+					if err := f.deliverer.deliverOnce(jobID, callbackURL, data); err != nil {
+						log.Warn("shutdown callback delivery failed", "error", err)
+					}
+				} else {
+					if err := f.deliverer.deliver(jobID, callbackURL, data); err != nil {
+						log.Warn("async callback delivery failed", "error", err)
+					}
 				}
+
+				resp = cbResp
 			}
 
 			f.history.store(taskName, jobID, resp)
-
 			slot.release(jobID, resp.Success, duration)
 			f.events.notify()
 
@@ -538,7 +541,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		}()
 
 		writeJSON(w, http.StatusGatewayTimeout, errorResponse{
-			Error: fmt.Sprintf("Sync mode timeout exceeded (%s). Use callbackUrl for long-running tasks.", f.syncTimeout),
+			Error: fmt.Sprintf("Sync timeout exceeded (%s). Use async:true or callbackUrl for long-running tasks.", f.syncTimeout),
 		})
 		return
 	}

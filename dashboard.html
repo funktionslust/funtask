@@ -659,7 +659,7 @@ header h1 span { font-weight: 400; color: var(--color-light-muted); font-size: .
     api('/run/' + encodeURIComponent(name), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({params: parsed})
+      body: JSON.stringify({async: true, params: parsed})
     }).then(function(r) {
       if (r.ok || r.status === 202) {
         toast('Task ' + name + ' started');

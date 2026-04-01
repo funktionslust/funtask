@@ -1098,7 +1098,7 @@ func TestRunHandler_SyncTimeout_Returns504(t *testing.T) {
 	}
 	var body errorResponse
 	_ = json.NewDecoder(resp.Body).Decode(&body)
-	want := fmt.Sprintf("Sync mode timeout exceeded (%s). Use callbackUrl for long-running tasks.", 50*time.Millisecond)
+	want := fmt.Sprintf("Sync timeout exceeded (%s). Use async:true or callbackUrl for long-running tasks.", 50*time.Millisecond)
 	if body.Error != want {
 		t.Errorf("error = %q, want %q", body.Error, want)
 	}
@@ -1847,6 +1847,50 @@ func TestRunHandler_Async_Returns202WithJobId(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for async delivery")
+	}
+}
+
+func TestRunHandler_Async_FireAndForget(t *testing.T) {
+	f := testServerWith(t, Task("echo", dummyTask))
+	srv := httptest.NewServer(f.routes())
+	defer srv.Close()
+
+	resp, err := postRun(srv, "echo", `{"async":true,"jobId":"ff-1"}`)
+	if err != nil {
+		t.Fatalf("POST /run/echo: %v", err)
+	}
+	defer closeBody(resp)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status = %d, want 202", resp.StatusCode)
+	}
+	var body struct {
+		JobID string `json:"jobId"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body.JobID != "ff-1" {
+		t.Errorf("jobId = %q, want %q", body.JobID, "ff-1")
+	}
+
+	// Wait for task to complete.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s := f.slots["echo"]
+		s.mu.Lock()
+		running := s.running
+		s.mu.Unlock()
+		if !running {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Result should be cached.
+	cached, ok := f.history.lookup("echo", "ff-1")
+	if !ok {
+		t.Fatal("result not cached after fire-and-forget async")
+	}
+	if !cached.Success {
+		t.Errorf("success = false, want true")
 	}
 }
 
