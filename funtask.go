@@ -158,6 +158,7 @@ type Server struct {
 	// Result history
 	resultHistorySize int            // server-wide default (0 = use defaultResultHistory)
 	taskResultSizes   map[string]int // per-task overrides
+	resultHistoryFile string         // optional path for JSON persistence
 
 	// Server (set during ListenAndServe)
 	logger     *slog.Logger
@@ -166,6 +167,7 @@ type Server struct {
 	events     *eventBroker
 	history    *resultHistory
 	deliverer  *deliverer
+	persister  *historyPersister
 }
 
 // New creates a server. At least one Task is required.
@@ -274,6 +276,20 @@ func WithResultHistory(n int) Option {
 	})
 }
 
+// WithResultHistoryFile enables JSON file persistence for the result
+// history. On startup, existing history is loaded from path. On
+// shutdown, current history is saved to path. If the file does not
+// exist on startup, the server starts with empty history.
+//
+// Note: JSON round-trips convert all numeric values in result Data
+// maps to float64 (standard encoding/json behavior). The history
+// file is designed for single-instance use.
+func WithResultHistoryFile(path string) Option {
+	return optionFunc(func(f *Server) {
+		f.resultHistoryFile = path
+	})
+}
+
 // WithDashboard enables the built-in developer dashboard at /dashboard.
 // The dashboard shows task status, progress, errors, and allows triggering
 // tasks. It uses Server-Sent Events via /events for live updates and
@@ -302,6 +318,18 @@ func (f *Server) ListenAndServe(addr string) error {
 	}
 	f.events = &eventBroker{clients: make(map[chan struct{}]struct{})}
 	f.history = newResultHistory(f.slots, f.resultHistorySize, f.taskResultSizes)
+	if f.resultHistoryFile != "" {
+		p := newHistoryPersister(f.resultHistoryFile, f.logger)
+		ph, err := p.load()
+		if err != nil {
+			f.logger.Warn("could not load result history, starting fresh",
+				"path", f.resultHistoryFile, "error", err)
+		}
+		if ph != nil {
+			p.populate(f.history, ph)
+		}
+		f.persister = p
+	}
 	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
 	f.startedAt = time.Now()
 	f.logger.Info("starting server", "addr", addr, "tasks", len(f.tasks))
@@ -357,6 +385,12 @@ func (f *Server) shutdown() error {
 	case <-shutdownCtx.Done():
 		f.logger.Warn("shutdown timeout reached, sending worker_shutdown for stuck jobs")
 		f.handleStuckJobs()
+	}
+
+	if f.persister != nil {
+		if err := f.persister.save(f.history); err != nil {
+			f.logger.Error("failed to save result history", "error", err)
+		}
 	}
 
 	f.logger.Info("shutdown complete")
