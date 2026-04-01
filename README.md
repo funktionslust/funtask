@@ -179,7 +179,8 @@ funtask.New("my-server",
     funtask.WithCallbackTimeout(30 * time.Second),
 
     // Result history
-    funtask.WithResultHistory(10),   // server-wide default per task
+    funtask.WithResultHistory(10),              // server-wide default per task
+    funtask.WithResultHistoryFile("history.json"), // persist across restarts
 
     // Extensibility
     funtask.WithReadiness(func() error { return nil }),
