@@ -137,6 +137,14 @@ func (f *Server) buildHealthResponse() healthResponse {
 					Finished: lastCompletedAt.Format(time.RFC3339),
 					Duration: lastDuration,
 				}
+			} else if results := f.history.list(name); len(results) > 0 {
+				r := results[0]
+				ts.LastJob = &healthLastJob{
+					JobID:    r.jobID,
+					Success:  r.response.Success,
+					Finished: r.finishedAt.Format(time.RFC3339),
+					Duration: r.response.Duration,
+				}
 			}
 		}
 
