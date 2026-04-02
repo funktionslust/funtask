@@ -113,12 +113,12 @@ func (p *historyPersister) save(h *resultHistory) error {
 	}
 
 	if err := p.saveToWriter(tmp, h); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return err
 	}
 
 	if err := p.renameFunc(tmp.Name(), p.path); err != nil {
-		os.Remove(tmp.Name())
+		_ = os.Remove(tmp.Name())
 		return fmt.Errorf("rename %s to %s: %w", tmp.Name(), p.path, err)
 	}
 	return nil
@@ -128,17 +128,17 @@ func (p *historyPersister) saveToWriter(w syncWriteCloser, h *resultHistory) err
 	ph := p.snapshot(h)
 	data, err := json.MarshalIndent(ph, "", "  ")
 	if err != nil {
-		w.Close()
+		_ = w.Close()
 		return fmt.Errorf("marshal history: %w", err)
 	}
 	data = append(data, '\n')
 
 	if _, err := w.Write(data); err != nil {
-		w.Close()
+		_ = w.Close()
 		return fmt.Errorf("write: %w", err)
 	}
 	if err := w.Sync(); err != nil {
-		w.Close()
+		_ = w.Close()
 		return fmt.Errorf("sync: %w", err)
 	}
 	return w.Close()
