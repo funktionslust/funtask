@@ -161,13 +161,14 @@ type Server struct {
 	resultHistoryFile string         // optional path for JSON persistence
 
 	// Server (set during ListenAndServe)
-	logger     *slog.Logger
-	tokenBytes []byte // pre-computed for constant-time auth checks
-	server     *http.Server
-	events     *eventBroker
-	history    *resultHistory
-	deliverer  *deliverer
-	persister  *historyPersister
+	logger       *slog.Logger
+	tokenBytes   []byte // pre-computed for constant-time auth checks
+	server       *http.Server
+	events       *eventBroker
+	history      *resultHistory
+	deliverer    *deliverer
+	persister    *historyPersister
+	persistDirty chan struct{} // signals that history needs persisting
 }
 
 // New creates a server. At least one Task is required.
@@ -329,6 +330,8 @@ func (f *Server) ListenAndServe(addr string) error {
 			p.populate(f.history, ph)
 		}
 		f.persister = p
+		f.persistDirty = make(chan struct{}, 1)
+		go f.persistLoop()
 	}
 	f.deliverer = newDeliverer(f.deadLetterDir, f.logger, f.callbackRetries, f.callbackTimeout)
 	f.startedAt = time.Now()
@@ -395,6 +398,44 @@ func (f *Server) shutdown() error {
 
 	f.logger.Info("shutdown complete")
 	return nil
+}
+
+const persistDebounce = 2 * time.Second
+
+// persistLoop runs in a background goroutine and writes history to disk
+// when signaled via persistDirty. Writes are debounced so rapid task
+// completions don't cause excessive disk I/O.
+func (f *Server) persistLoop() {
+	var timer *time.Timer
+	for {
+		select {
+		case <-f.persistDirty:
+			if timer != nil {
+				timer.Stop()
+			}
+			timer = time.AfterFunc(persistDebounce, func() {
+				if err := f.persister.save(f.history); err != nil {
+					f.logger.Error("failed to persist result history", "error", err)
+				}
+			})
+		case <-f.stopCh:
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		}
+	}
+}
+
+// markDirty signals that result history has changed and should be persisted.
+func (f *Server) markDirty() {
+	if f.persistDirty == nil {
+		return
+	}
+	select {
+	case f.persistDirty <- struct{}{}:
+	default: // already signaled
+	}
 }
 
 func (f *Server) handleStuckJobs() {

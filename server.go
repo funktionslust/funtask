@@ -449,6 +449,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			}
 
 			f.history.store(taskName, jobID, resp)
+			f.markDirty()
 			slot.release(jobID, resp.Success, duration)
 			f.events.notify()
 
@@ -534,6 +535,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 			d := time.Since(startedAt).Round(time.Millisecond).String()
 			resp := buildJobResponse(jobID, timedOutResult, d)
 			resp = f.history.store(taskName, jobID, resp)
+			f.markDirty()
 
 			slot.release(jobID, resp.Success, d)
 			f.events.notify()
@@ -558,6 +560,7 @@ func (f *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(startedAt).Round(time.Millisecond).String()
 	resp := buildJobResponse(jobID, result, duration)
 	resp = f.history.store(taskName, jobID, resp)
+	f.markDirty()
 
 	slot.release(jobID, resp.Success, duration)
 	f.events.notify()
