@@ -115,6 +115,64 @@ funtask.Task("sync-orders", syncOrders).
 `Description()` shows as a subtitle on the dashboard card. `Example()` pre-fills
 the params editor and appears in the `/health` JSON.
 
+## Pipelines
+
+Compose existing tasks into a new task with `Pipeline()`. The composed task
+is registered like any other - it shows up in `/health`, the dashboard, and
+duplicate detection - and the orchestrator only needs to trigger one endpoint.
+
+```go
+funtask.New("my-server",
+    funtask.Task("sync-akeneo", syncAkeneo),
+    funtask.Task("sync-sap", syncSAP),
+    funtask.Task("sync-shopify", syncShopify),
+    funtask.Task("cleanup", cleanup),
+
+    funtask.Pipeline("full-sync",
+        funtask.Seq(
+            funtask.Par(funtask.Ref("sync-akeneo"), funtask.Ref("sync-sap")),
+            funtask.Ref("sync-shopify"),
+            funtask.Ref("cleanup"),
+        ),
+    ).Description("Full product sync in three phases"),
+)
+```
+
+The building blocks are:
+
+- `Ref(name)` references a task registered with the same Server. Resolution
+  happens at execution time so referenced tasks may be registered before or
+  after the pipeline.
+- `Inline(name, fn)` wraps a `TaskFunc` for ad-hoc steps that do not warrant
+  their own top-level task.
+- `Seq(steps...)` runs steps sequentially and fails fast.
+- `Par(steps...)` runs steps concurrently, waits for all to finish (so partial
+  side effects are not abandoned), and returns the first failure by
+  declaration order. Messages from any additional failing steps are appended
+  to the returned message so you do not lose diagnostic context.
+
+Pipelines compose: `Seq(Par(...), Ref(...), Par(...))` is fine.
+
+Sub-tasks invoked through `Ref` are called as Go functions, so they do not
+acquire their own slot. The pipeline holds one slot for itself, and the
+referenced sub-tasks remain individually triggerable from the dashboard or
+other clients while the pipeline runs.
+
+This means a sub-task can run twice concurrently if you trigger it directly
+while a pipeline is already running it. If your sub-tasks are not safe to run
+concurrently (most database or external-API tasks aren't), use a fixed `jobId`
+on both call sites so funtask's duplicate detection deduplicates them.
+
+Sub-task `Result.Data` is not propagated to the pipeline result - only
+messages are aggregated. Use `Inline` to capture intermediate values
+explicitly if you need them downstream.
+
+Cancellation, panic recovery and step history work as you would expect:
+`/stop/full-sync` cancels the pipeline's context, which `Seq` checks between
+steps; panics in `Par` goroutines are converted to `Fail("panic", ...)`;
+`run.Step()` is reported by `Ref` and `Inline` so the dashboard shows which
+sub-task is currently running.
+
 ## Dashboard
 
 Enable the built-in developer dashboard with `WithDashboard()`:

@@ -37,6 +37,12 @@ type TaskDef struct {
 	description string
 	example     map[string]any
 	keepResults int // per-task result history limit; 0 = use server default
+
+	// pipelineRoot is set by Pipeline. When non-nil, apply builds the
+	// task function from the step tree at registration time, capturing
+	// the server's task map so referenced sub-tasks can be resolved
+	// lazily at execution time.
+	pipelineRoot Step
 }
 
 // Task creates a named task definition. Pass the result to New.
@@ -70,7 +76,14 @@ func (td *TaskDef) Example(params map[string]any) *TaskDef {
 }
 
 func (td *TaskDef) apply(s *Server) {
-	s.tasks[td.name] = td.fn
+	fn := td.fn
+	if td.pipelineRoot != nil {
+		root := td.pipelineRoot
+		fn = func(run *Run, params Params) Result {
+			return root.resolve(run, params, s.tasks)
+		}
+	}
+	s.tasks[td.name] = fn
 	if td.description != "" {
 		s.taskDescriptions[td.name] = td.description
 	} else {
